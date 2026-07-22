@@ -1,0 +1,6 @@
+# Wrangler local dev secrets for apps/api. Copy to `.dev.vars` (git-ignored)
+# and fill in real values. These map to the secrets in the Env interface.
+CLERK_ISSUER=https://your-app-name.clerk.accounts.dev
+CLERK_AUTHORIZED_PARTY=http://localhost:3000
+PINECONE_API_KEY=your_pinecone_api_key
+PINECONE_INDEX=rag-index

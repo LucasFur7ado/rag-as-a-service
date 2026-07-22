@@ -1,0 +1,25 @@
+{
+  "name": "api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"(no lint configured for api)\"",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@pinecone-database/pinecone": "^8.1.0",
+    "@rag/shared": "workspace:*",
+    "hono": "^4.12.31",
+    "jose": "^6.2.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260721.1",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.112.0"
+  }
+}

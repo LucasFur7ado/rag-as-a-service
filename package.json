@@ -1,0 +1,21 @@
+{
+  "name": "rag-as-a-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-tenant RAG-as-a-Service monorepo (structure-only scaffold).",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "pnpm --parallel --filter web --filter api dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "deploy:web": "pnpm --filter web build && echo \"Static site built at apps/web/out/ — upload that directory to any static host (S3+CloudFront, Cloudflare Pages, nginx, ...).\"",
+    "deploy:api": "pnpm --filter api deploy"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

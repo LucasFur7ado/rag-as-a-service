@@ -1,0 +1,65 @@
+{
+  // Infrastructure-as-code for the RAG-as-a-Service backend API worker.
+  // Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rag-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+
+  // --- Workers AI (future embeddings / re-ranking / generation) ------------
+  // TODO: used by src/services once features are implemented.
+  "ai": {
+    "binding": "AI"
+  },
+
+  // --- KV namespace (future API keys / rate limiting) ----------------------
+  // TODO: replace the placeholder id with a real namespace id from:
+  //   wrangler kv namespace create RAG_KV
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID"
+    }
+  ],
+
+  // --- Queue (future async ingestion) --------------------------------------
+  // Producer + consumer both bound to the same queue. The `queue()` handler
+  // in src/index.ts is a stub. Create the queue with:
+  //   wrangler queues create ingest-queue
+  "queues": {
+    "producers": [
+      {
+        "queue": "ingest-queue",
+        "binding": "INGEST_QUEUE"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "ingest-queue",
+        "max_batch_size": 10,
+        "max_batch_timeout": 30,
+        "max_retries": 3,
+        "dead_letter_queue": "ingest-queue-dlq"
+      }
+    ]
+  },
+
+  // --- Workflow (future durable ingestion pipeline) ------------------------
+  // Bound to the stub `IngestWorkflow` class exported from src/index.ts.
+  // TODO: implement the workflow steps (parse → chunk → embed → upsert).
+  "workflows": [
+    {
+      "name": "ingest-workflow",
+      "binding": "INGEST_WORKFLOW",
+      "class_name": "IngestWorkflow"
+    }
+  ]
+
+  // --- Secrets (set via `wrangler secret put <NAME>`, not committed) --------
+  // CLERK_ISSUER, CLERK_AUTHORIZED_PARTY, PINECONE_API_KEY, PINECONE_INDEX
+  // For local dev, put them in apps/api/.dev.vars (git-ignored).
+}
