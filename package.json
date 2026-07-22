@@ -13,7 +13,7 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "deploy:web": "pnpm --filter web build && echo \"Static site built at apps/web/out/ — upload that directory to any static host (S3+CloudFront, Cloudflare Pages, nginx, ...).\"",
-    "deploy:api": "pnpm --filter api deploy"
+    "deploy:api": "pnpm --filter api run deploy"
   },
   "devDependencies": {
     "typescript": "^5.9.2"
