@@ -23,48 +23,94 @@ export interface Tenant {
   createdAt: IsoDateString;
 }
 
+/** Epoch milliseconds — how the API stores and returns timestamps (D1 integer). */
+export type EpochMillis = number;
+
 /**
  * A collection is a named group of documents that are indexed together and
  * queried as a unit (roughly: one knowledge base / one vector namespace).
+ * Mirrors the D1 `collections` table (apps/api/src/db/schema.ts).
  */
 export interface Collection {
   id: string;
   tenantId: string;
   name: string;
   description?: string;
-  /** Number of documents currently in the collection. */
-  documentCount: number;
-  createdAt: IsoDateString;
-  updatedAt: IsoDateString;
+  createdAt: EpochMillis;
+  updatedAt: EpochMillis;
 }
 
-/** Lifecycle status of an ingestion job for a single document. */
-export type IngestJobStatus =
-  | "pending"
-  | "processing"
-  | "ready"
-  | "failed";
+/**
+ * Lifecycle status of a document. Uploads start at `uploaded`; the ingestion
+ * pipeline (parse → chunk → embed → upsert) moves it to `processing` and then
+ * `ready`, or `error` with a message.
+ */
+export type DocumentStatus = "uploaded" | "processing" | "ready" | "error";
 
 /**
- * A source document that has been (or is being) ingested into a collection.
- * The actual bytes/chunks/embeddings live in object storage and the vector
- * store; this record is the metadata handle.
+ * A source document uploaded into a collection. The raw bytes live in R2;
+ * this record (D1 `documents` table) is the metadata handle.
  */
 export interface Document {
   id: string;
   tenantId: string;
   collectionId: string;
-  /** Original filename or display title. */
-  name: string;
+  /** Original filename, e.g. "report.pdf". */
+  filename: string;
   /** MIME type of the source, e.g. "application/pdf". */
   contentType: string;
-  /** Size of the source in bytes, if known. */
-  sizeBytes?: number;
-  status: IngestJobStatus;
-  /** Populated when `status === "failed"`. */
+  /** Size of the source in bytes. */
+  sizeBytes: number;
+  status: DocumentStatus;
+  /** Populated when `status === "error"`. */
   error?: string;
-  createdAt: IsoDateString;
-  updatedAt: IsoDateString;
+  /** Number of chunks indexed. Populated when `status === "ready"`. */
+  chunkCount?: number;
+  /** When ingestion last completed successfully. */
+  ingestedAt?: EpochMillis;
+  createdAt: EpochMillis;
+  updatedAt: EpochMillis;
+}
+
+// --- Request / response shapes ---------------------------------------------
+
+/** Body for POST /v1/collections. */
+export interface CreateCollectionRequest {
+  name: string;
+  description?: string;
+}
+
+/** Response for GET /v1/collections. */
+export interface ListCollectionsResponse {
+  collections: Collection[];
+}
+
+/** Response for GET /v1/collections/:id/documents. */
+export interface ListDocumentsResponse {
+  documents: Document[];
+}
+
+/**
+ * Response for POST /v1/collections/:id/documents (multipart upload, field
+ * `file`). The created document starts with `status: "uploaded"`.
+ */
+export interface UploadDocumentResponse {
+  document: Document;
+}
+
+/** Response for GET /v1/documents/:id/status — lightweight polling shape. */
+export interface DocumentStatusResponse {
+  status: DocumentStatus;
+  /** Populated when `status === "ready"`. */
+  chunkCount?: number;
+  /** Populated when `status === "error"`. */
+  error?: string;
+  updatedAt: EpochMillis;
+}
+
+/** Response for POST /v1/documents/:id/reingest (202 Accepted). */
+export interface ReingestDocumentResponse {
+  document: Document;
 }
 
 /** A request to run a retrieval-augmented query against a collection. */

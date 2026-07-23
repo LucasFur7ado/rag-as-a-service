@@ -32,7 +32,9 @@ export default function RootLayout({
       lang="en"
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      {/* suppressHydrationWarning: browser extensions (e.g. ColorZilla) inject
+          attributes into <body> before hydration; only this element is affected. */}
+      <body className="min-h-full flex flex-col" suppressHydrationWarning>
         <Providers>
           <SiteHeader />
           <main className="flex-1">{children}</main>

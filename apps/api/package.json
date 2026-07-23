@@ -9,16 +9,21 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "lint": "echo \"(no lint configured for api)\"",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply rag-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply rag-db --remote"
   },
   "dependencies": {
-    "@pinecone-database/pinecone": "^8.1.0",
     "@rag/shared": "workspace:*",
+    "drizzle-orm": "^0.45.2",
     "hono": "^4.12.31",
-    "jose": "^6.2.3"
+    "jose": "^6.2.3",
+    "unpdf": "^1.6.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260721.1",
+    "drizzle-kit": "^0.31.10",
     "typescript": "^5.9.2",
     "wrangler": "^4.112.0"
   }

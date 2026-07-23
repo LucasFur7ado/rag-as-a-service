@@ -2,5 +2,8 @@
 # and fill in real values. These map to the secrets in the Env interface.
 CLERK_ISSUER=https://your-app-name.clerk.accounts.dev
 CLERK_AUTHORIZED_PARTY=http://localhost:3000
+# Pinecone: create a serverless index with dimension 1024 (bge-m3) and metric
+# `cosine`. The host is shown on the index page in the Pinecone console.
 PINECONE_API_KEY=your_pinecone_api_key
 PINECONE_INDEX=rag-index
+PINECONE_INDEX_HOST=your-index-host.svc.your-region.pinecone.io

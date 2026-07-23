@@ -1,8 +1,9 @@
 import type { AuthContext } from "@rag/shared";
 
 /**
- * Message shape enqueued on INGEST_QUEUE for async document ingestion.
- * TODO: expand once the ingestion pipeline is implemented.
+ * Message shape enqueued on INGEST_QUEUE for async document ingestion. The
+ * queue consumer (src/index.ts) starts an IngestWorkflow instance with this
+ * as its params.
  */
 export interface IngestMessage {
   tenantId: string;
@@ -23,9 +24,17 @@ export interface Env {
   CLERK_ISSUER: string;
   /** Optional authorized party (azp) check. Empty to skip. */
   CLERK_AUTHORIZED_PARTY?: string;
-  /** Pinecone credentials (unused until retrieval is implemented). */
+  /** Pinecone API key (secret, `wrangler secret put PINECONE_API_KEY`). */
   PINECONE_API_KEY: string;
+  /** Pinecone index name (var; informational — the data plane uses the host). */
   PINECONE_INDEX: string;
+  /**
+   * Pinecone index host (var), e.g. `my-index-abc1234.svc.aped-1234-a56b.pinecone.io`
+   * — shown on the index page in the Pinecone console. Scheme optional.
+   */
+  PINECONE_INDEX_HOST: string;
+  /** Origin(s) of the web SPA allowed by CORS, comma-separated. */
+  WEB_ORIGIN: string;
 
   // --- Bindings (declared in wrangler.jsonc) -----------------------------
   /** Workers AI. */
@@ -36,6 +45,10 @@ export interface Env {
   INGEST_WORKFLOW: Workflow;
   /** KV namespace for future API keys / rate limiting. */
   KV: KVNamespace;
+  /** D1 database for collections/documents metadata (Drizzle schema). */
+  DB: D1Database;
+  /** R2 bucket holding the raw uploaded documents. */
+  RAW_DOCS: R2Bucket;
 }
 
 /**
