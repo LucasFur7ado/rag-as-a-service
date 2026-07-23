@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import type { CreateCollectionRequest } from "@rag/shared";
 import type { AppBindings } from "../env";
 import { requireAuth } from "../lib/auth";
-import { getDb, toCollection, toDocument } from "../db";
+import { findOwnedCollection, getDb, toCollection, toDocument } from "../db";
 import { collections as collectionsTable, documents as documentsTable } from "../db/schema";
 import { deleteByPrefix } from "../lib/r2";
 import { PineconeVectorStore, vectorNamespace } from "../services/vectorstore";
@@ -62,25 +62,6 @@ function sanitizeFilename(name: string): string {
   // eslint-disable-next-line no-control-regex
   const clean = base.replace(/[\u0000-\u001f\u007f]/g, "").trim();
   return clean || "file";
-}
-
-/** Load a collection only if it belongs to the tenant; otherwise null. */
-async function findOwnedCollection(
-  db: ReturnType<typeof getDb>,
-  tenantId: string,
-  collectionId: string,
-) {
-  const [row] = await db
-    .select()
-    .from(collectionsTable)
-    .where(
-      and(
-        eq(collectionsTable.id, collectionId),
-        eq(collectionsTable.tenantId, tenantId),
-      ),
-    )
-    .limit(1);
-  return row ?? null;
 }
 
 // --- POST /v1/collections --------------------------------------------------

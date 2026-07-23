@@ -15,6 +15,13 @@
       "when": 1784822974507,
       "tag": "0001_ingestion_status_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784830989556,
+      "tag": "0002_api_keys",
+      "breakpoints": true
     }
   ]
 }

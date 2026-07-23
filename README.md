@@ -10,9 +10,18 @@ pnpm monorepo. Implemented so far:
   embedded (Workers AI, BGE-M3) and upserted to Pinecone by a durable
   Cloudflare Workflow, with live status in the dashboard. See
   [Ingestion pipeline](#ingestion-pipeline-feature-2).
+- **Feature 3 — query pipeline**: a natural-language question is embedded,
+  retrieved against the tenant+collection namespace, assembled into a bounded
+  context and answered — grounded strictly in the retrieved chunks, streamed
+  token-by-token with validated citations. See
+  [Query pipeline](#query-pipeline-feature-3).
+- **Feature 4 — API keys & rate limiting**: tenants mint API keys to call the
+  product API programmatically; the public endpoints accept a Clerk session
+  **or** an API key, and API-key traffic is rate-limited per key by an atomic
+  Durable Object. See [Authentication](#authentication-session-or-api-key) and
+  [Rate limiting](#rate-limiting-feature-4).
 
-Retrieval/query/generation (Feature 3) and API keys (Feature 4) remain typed
-`// TODO` stubs.
+This is the full feature set for the current scaffold.
 
 ## Architecture
 
@@ -71,13 +80,31 @@ a 403 that would leak existence). Uploads accept PDF / plain text / Markdown up
 to 25 MB; raw files land in R2 under
 `tenants/{tenantId}/collections/{collectionId}/documents/{documentId}/{filename}`.
 
-**Where the remaining features plug in (still stubbed):**
+**Implemented — query pipeline (Feature 3):**
 
-| Seam | Location |
+| Piece | Location |
 | --- | --- |
-| LLM provider | [`apps/api/src/services/llm.ts`](apps/api/src/services/llm.ts) |
-| Feature routes (`query`, `apikeys`) | [`apps/api/src/routes/`](apps/api/src/routes/) — return `501 Not Implemented` |
-| Shared domain types | [`packages/shared/src/index.ts`](packages/shared/src/index.ts) |
+| Query route (`POST /v1/collections/:id/query`, SSE + JSON) | [`apps/api/src/routes/query.ts`](apps/api/src/routes/query.ts) |
+| Retrieval (embed query + tenant-filtered vector search) | [`apps/api/src/services/retrieval.ts`](apps/api/src/services/retrieval.ts) |
+| Context assembly (threshold, dedupe, token budget, ordering) | [`apps/api/src/services/context.ts`](apps/api/src/services/context.ts) |
+| Citation resolution (map + validate `[n]` markers) | [`apps/api/src/services/citations.ts`](apps/api/src/services/citations.ts) |
+| LLM provider (Workers AI, Llama 3.3, streaming) | [`apps/api/src/services/llm.ts`](apps/api/src/services/llm.ts) |
+| System prompt | [`apps/api/src/prompts.ts`](apps/api/src/prompts.ts) |
+| Token counter (BPE, for the context budget) | [`apps/api/src/lib/tokens.ts`](apps/api/src/lib/tokens.ts) |
+| Playground UI (streamed answer + clickable citations) | [`apps/web/src/app/dashboard/collections/playground/`](apps/web/src/app/dashboard/collections/playground/) |
+
+**Implemented — API keys & rate limiting (Feature 4):**
+
+| Piece | Location |
+| --- | --- |
+| Unified auth middleware (session **or** API key) | [`apps/api/src/lib/auth.ts`](apps/api/src/lib/auth.ts) |
+| API-key management API (`/v1/api-keys`, session-only) | [`apps/api/src/routes/apikeys.ts`](apps/api/src/routes/apikeys.ts) |
+| Key generation / hashing / KV cache shape | [`apps/api/src/services/apikeys.ts`](apps/api/src/services/apikeys.ts) |
+| Per-key rate limiter (Durable Object) | [`apps/api/src/durable/ratelimiter.ts`](apps/api/src/durable/ratelimiter.ts) |
+| API-keys dashboard (create-once, list, revoke, curl snippet) | [`apps/web/src/app/dashboard/api-keys/`](apps/web/src/app/dashboard/api-keys/) |
+
+Shared domain types for every feature live in
+[`packages/shared/src/index.ts`](packages/shared/src/index.ts).
 
 ## Prerequisites
 
@@ -202,6 +229,212 @@ but **Workers AI always calls the real API** (inference isn't emulated), so
 embedding runs incur normal Workers AI usage and need an authenticated
 Wrangler session. Pinecone is likewise a real remote index even in dev.
 
+## Query pipeline (Feature 3)
+
+Ask a question against a collection and get a streamed, grounded answer with
+citations:
+
+```
+POST /v1/collections/:id/query        body: { query, topK?, stream? }
+   1. embed query        (Workers AI bge-m3 — the SAME model as ingestion)
+   2. retrieve top-k     (Pinecone: tenant+collection namespace + tenantId filter)
+   3. assemble context   (threshold → dedupe → token budget → reorder → label [n])
+   4. generate           (Workers AI Llama 3.3, streamed, grounded system prompt)
+   5. resolve citations  (map emitted [n] markers → real chunks; drop hallucinated)
+```
+
+Each stage is a separate, individually-testable function behind a service seam
+(`retrieval` → `context` → `llm` → `citations`); the route only validates,
+orchestrates and shapes the response — no SDK calls in the handler.
+
+**Response modes**
+
+- **Streaming (default)** — Server-Sent Events; each `data:` line is one JSON
+  `QueryStreamEvent`: zero+ `delta` (answer text) → one `sources` (citations +
+  usage) → one `done` (or an in-band `error`). The Playground consumes this so
+  tokens appear progressively and citations render when generation completes.
+- **`stream: false`** — a single JSON `{ answer, sources, usage }`, easy to
+  call from curl and to evaluate offline:
+
+  ```bash
+  curl -X POST "$API/v1/collections/$ID/query" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"query":"What is the refund policy?","stream":false}'
+  ```
+
+**Model.** Generation uses **`@cf/meta/llama-3.3-70b-instruct-fp8-fast`**
+(Workers AI, free-tier, instruction-tuned open weights) behind the `LlmProvider`
+seam in [`llm.ts`](apps/api/src/services/llm.ts) — swap the class (or just
+`GENERATION_MODEL`) to move generation elsewhere (e.g. Gemini) without touching
+the pipeline. Query embedding **must** use the ingestion model
+(`@cf/baai/bge-m3`); BGE-M3 is symmetric and needs no query prefix, so the raw
+question is embedded as-is.
+
+**Grounding & citations.** The [system prompt](apps/api/src/prompts.ts) instructs
+the model to answer **only** from the numbered context passages, cite with the
+given `[n]` markers, and reply *"I could not find an answer to this in the
+provided documents."* when the context doesn't cover the question — so an
+unanswerable query returns an explicit non-answer, not a fabrication. After
+generation, every emitted `[n]` marker is validated against the real retrieved
+chunks; markers with no matching chunk are dropped and reported in
+`usage.invalidMarkers` (the UI flags them). Returned `sources` carry
+`documentId`, `filename`, `page`, `chunkIndex`, `snippet`, `score` and whether
+the answer actually `cited` them.
+
+**Lost-in-the-middle.** LLMs attend most reliably to the **start and end** of a
+long context, so `orderForContextWindow()` in
+[`context.ts`](apps/api/src/services/context.ts) places the highest-scoring
+chunks at both ends and buries the weakest in the middle. Citation markers are
+assigned by relevance rank *before* reordering, so marker numbers stay
+meaningful regardless of prompt position.
+
+**Tenant isolation.** Retrieval runs inside the per-tenant+collection namespace
+built by `vectorNamespace()` (the only namespace constructor in the codebase)
+**and** applies a `tenantId` metadata filter as defense-in-depth — a
+namespace-construction bug still can't surface another tenant's vectors. The
+collection itself is loaded tenant-scoped, so a second user querying the first
+user's collection id gets a **404**.
+
+**Hybrid search: not enabled — dense-only.** The Workers AI bge-m3 binding
+returns dense embeddings only (`{ data: number[][] }`); it does not expose the
+model's sparse/lexical weights, so no sparse vectors were stored at ingestion
+and there is nothing to fuse. The dense path lives behind the same
+`VectorStore` seam with a clearly-marked `// TODO: hybrid search` in
+[`retrieval.ts`](apps/api/src/services/retrieval.ts) for when sparse vectors
+become available (Pinecone native sparse-dense, or manual RRF).
+
+**Tuning retrieval.** Every knob lives in
+[`apps/api/src/config.ts`](apps/api/src/config.ts) and takes effect immediately
+(no re-ingestion needed):
+
+| Constant | Default | Effect |
+| --- | --- | --- |
+| `TOP_K` | `8` | Chunks fetched from the vector store per query |
+| `MAX_TOP_K` | `20` | Hard cap on a client-supplied `topK` |
+| `SIMILARITY_THRESHOLD` | `0.35` | Min cosine score to enter the context (raise = stricter grounding / more "not found") |
+| `NEAR_DUPLICATE_JACCARD` | `0.85` | Word-trigram similarity above which chunks are deduplicated |
+| `CONTEXT_TOKEN_BUDGET` | `4000` | Max context tokens (BPE-counted); lowest-scoring chunks dropped first |
+| `MAX_QUERY_LENGTH` | `2000` | Reject longer questions with 400 |
+| `GENERATION_MODEL` / `GENERATION_MAX_TOKENS` / `GENERATION_TEMPERATURE` | Llama 3.3 / `1024` / `0.1` | Generation model + decoding |
+
+**Edge cases.** Empty query → **400**; collection with no `ready` documents →
+**409** (friendly "ingest a document first" — never a hallucinated answer);
+nothing clears `SIMILARITY_THRESHOLD` → **422** ("no relevant content found").
+
+**Re-ranking** (out of scope) has a marked insertion point between retrieval and
+context assembly (`// TODO (next): re-ranking` in both `query.ts` and
+`context.ts`).
+
+## Authentication (session or API key)
+
+Every protected endpoint runs through one unified middleware
+([`apps/api/src/lib/auth.ts`](apps/api/src/lib/auth.ts)) that accepts **two**
+credential types, both resolving to the same context
+(`{ tenantId, authType, userId?, keyId? }`) so all downstream tenant-scoping is
+identical:
+
+- **Clerk session JWT** — `Authorization: Bearer <clerk-jwt>`, used by the
+  dashboard. Verified against Clerk's JWKS.
+- **API key** — `Authorization: Bearer rag_live_…` (or `X-API-Key: rag_live_…`),
+  used by programmatic callers. Verified by SHA-256 **hash lookup** (constant
+  work — one indexed read; never a scan/compare over stored keys).
+
+The credential is classified by the `rag_live_` prefix; a session JWT falls
+through to Clerk verification.
+
+**Which auth each endpoint accepts:**
+
+| Endpoint | Session | API key |
+| --- | :---: | :---: |
+| `POST /v1/collections/:id/query` | ✓ | ✓ |
+| `GET /v1/collections`, `GET /v1/collections/:id` | ✓ | ✓ |
+| `POST /v1/collections/:id/documents` (upload) | ✓ | ✓ |
+| `GET /v1/collections/:id/documents` | ✓ | ✓ |
+| `GET /v1/documents/:id`, `.../status`, `.../raw` | ✓ | ✓ |
+| `POST /v1/documents/:id/reingest`, `DELETE …` | ✓ | ✓ |
+| `POST/GET/DELETE /v1/collections`, `DELETE /v1/collections/:id` | ✓ | ✓ |
+| **`POST/GET/DELETE /v1/api-keys`** (key management) | ✓ | ✗ **401** |
+
+API keys are **full-access for their tenant** (no scopes yet — see
+`// TODO: scopes` in [`apikeys.ts`](apps/api/src/services/apikeys.ts)) with one
+deliberate exception: **API keys can never manage API keys.** Key management is
+session-only (`requireSession` rejects any `rag_live_` credential with 401), so
+a leaked key cannot mint or revoke keys. Tenant isolation is unchanged under
+key auth: a key from tenant A querying tenant B's collection id gets a **404**.
+
+### API key management (`/v1/api-keys`, session-only)
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `POST` | `/v1/api-keys` | Body `{ name, rateLimitPerMinute? }` → **201** with the **plaintext key** (only time it is ever returned) + metadata |
+| `GET` | `/v1/api-keys` | List the tenant's keys — prefix + last-4 only, never key material |
+| `DELETE` | `/v1/api-keys/:id` | Revoke (soft delete): set `revoked_at`, purge the KV cache; the key fails auth immediately |
+
+**Key security.** Keys are `rag_live_` + 32 bytes of `crypto.getRandomValues`
+(base64url). The **plaintext is never stored** — only its SHA-256 hash (unique,
+indexed). D1 keeps a display `key_prefix` + `last4` for the UI. A KV entry keyed
+by the hash (`{ keyId, tenantId, revoked, rateLimitPerMinute }`) serves the
+read-optimized auth fast path; on a KV miss (cold cache / eventual consistency)
+auth falls back to D1, the source of truth, and repopulates KV. `last_used_at`
+is refreshed fire-and-forget via `ctx.waitUntil`, throttled to at most once per
+key per minute so it never adds latency or hammers D1.
+
+```bash
+# Create a key (from the dashboard, or with a Clerk session JWT):
+curl -X POST "$API/v1/api-keys" \
+  -H "Authorization: Bearer $CLERK_JWT" -H "Content-Type: application/json" \
+  -d '{"name":"prod-backend","rateLimitPerMinute":120}'
+# → { "apiKey": {...}, "key": "rag_live_XXXX…" }   ← copy `key` now; shown once
+
+# Call the product API with the key (no browser/session needed):
+curl -X POST "$API/v1/collections/$COLLECTION_ID/query" \
+  -H "Authorization: Bearer rag_live_XXXX…" -H "Content-Type: application/json" \
+  -d '{"query":"What is the refund policy?","stream":false}'
+```
+
+An invalid, malformed, or revoked key returns **401**.
+
+## Rate limiting (Feature 4)
+
+**Mechanism: a Durable Object** ([`ratelimiter.ts`](apps/api/src/durable/ratelimiter.ts)),
+one instance per API key (`getByName("key:{keyId}")`). Chosen deliberately:
+
+- **Not KV** — KV is eventually consistent with per-key write limits, so a
+  counter there would be inaccurate and bypassable across concurrent requests
+  and colos (the spec's explicit non-goal).
+- **Not the native rate-limiting binding** — its `limit`/`period` are fixed in
+  `wrangler.jsonc` and it returns only `{ success }`, so it can't honor a
+  **per-key** `rate_limit_per_minute` override or expose the exact
+  remaining/reset needed for `RateLimit-*` headers.
+
+A DO is single-threaded per instance, giving **true atomic** increments, plus
+per-key limits and precise header math.
+
+**Algorithm: sliding-window log.** We keep the timestamps of allowed hits in the
+trailing 60s window. A naive *fixed* window lets a caller fire a full quota at
+the end of one window and again at the start of the next (~2× burst at the
+boundary); the sliding window moves continuously with `now`, so the limit holds
+across every 60s span. State is in-memory (a rate counter needs no durability —
+eviction just resets the window, at worst momentarily lenient), keeping the hot
+path free of storage writes.
+
+**Behavior:**
+
+- Limit is **per key, per minute** — `DEFAULT_RATE_LIMIT_PER_MINUTE` (60),
+  overridable per key via `rate_limit_per_minute`.
+- Runs in the auth middleware **before** any expensive work, so a throttled
+  request never reaches embedding/retrieval/generation.
+- Every API-key response carries `RateLimit-Limit`, `RateLimit-Remaining`,
+  `RateLimit-Reset` (seconds). A rejection returns **429** with `Retry-After`
+  and a JSON body `{ error, retryAfter, limit }`.
+- **Session (dashboard) traffic is not rate-limited** — it is Clerk-gated,
+  interactive and low-volume; the surface being protected is programmatic
+  API-key traffic. (Flip this by adding a session branch to the limiter.)
+
+Tunables in [`config.ts`](apps/api/src/config.ts): `DEFAULT_RATE_LIMIT_PER_MINUTE`,
+`MAX_RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_WINDOW_MS`, `LAST_USED_THROTTLE_MS`,
+`API_KEY_PREFIX`, `API_KEY_RANDOM_BYTES`.
+
 ## Run in dev
 
 First, apply the D1 migrations to the local (miniflare) database — `wrangler
@@ -232,8 +465,11 @@ Quick API check (no auth needed):
 
 ```bash
 curl http://localhost:8787/health          # -> {"status":"ok","version":"0.1.0",...}
-curl http://localhost:8787/me              # -> 401 {"error":"Missing bearer token"}
+curl http://localhost:8787/me              # -> 401 {"error":"Missing credentials"}
 ```
+
+The rate-limiter Durable Object is emulated by `wrangler dev` locally (no remote
+resource needed); its migration (`tag: v1`) is applied automatically on deploy.
 
 ## Scripts (root)
 
@@ -260,8 +496,10 @@ pnpm dlx wrangler queues create ingest-queue
 pnpm dlx wrangler queues create ingest-queue-dlq
 pnpm dlx wrangler d1 create rag-db               # paste database_id into apps/api/wrangler.jsonc
 pnpm dlx wrangler r2 bucket create rag-raw-docs
-# Apply D1 schema migrations to the remote database
+# Apply D1 schema migrations to the remote database (includes the api_keys table)
 cd apps/api && pnpm db:migrate:remote            # = wrangler d1 migrations apply rag-db --remote
+# The RATE_LIMITER Durable Object needs no provisioning — its migration
+# (tag: v1, new_sqlite_classes) is applied automatically by `wrangler deploy`.
 # Secrets
 pnpm dlx wrangler secret put CLERK_ISSUER
 pnpm dlx wrangler secret put PINECONE_API_KEY
@@ -300,10 +538,14 @@ See [`apps/web/README.md`](apps/web/README.md) for the static-export details.
 
 ## What is intentionally NOT implemented
 
-Retrieval/query (`POST /query`), re-ranking, LLM generation/streaming
-(Feature 3), API-key generation and rate limiting (Feature 4), billing, and
-analytics. These live behind the typed seams listed above and currently throw
-`"not implemented"` / return `501`. Hybrid (sparse+dense) search is also
-deferred to Feature 3 — the Workers AI bge-m3 binding exposes dense vectors
-only (see the `// TODO (Feature 3)` marker in
-[`embeddings.ts`](apps/api/src/services/embeddings.ts)).
+Billing/plans/quotas (beyond the per-minute rate limit), usage analytics, and
+**API-key scopes/permissions** — all keys are currently full-access for their
+tenant (`// TODO: scopes` in [`apikeys.ts`](apps/api/src/services/apikeys.ts)).
+Within the query pipeline (Feature 3), also out of scope: **re-ranking** with a
+cross-encoder (clean insertion point marked between retrieval and context
+assembly), query rewriting / HyDE / multi-query, semantic caching, an evaluation
+harness, and conversation history (single-turn Q&A only). **Hybrid (sparse+dense)
+search** is not enabled: the Workers AI bge-m3 binding exposes dense vectors
+only, so retrieval is dense-only behind the `VectorStore` seam (see the
+`// TODO: hybrid search` marker in
+[`retrieval.ts`](apps/api/src/services/retrieval.ts)).

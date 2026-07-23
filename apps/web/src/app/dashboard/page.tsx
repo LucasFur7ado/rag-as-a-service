@@ -1,8 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useAuth } from "@clerk/react";
-import { FolderIcon } from "lucide-react";
+import { FolderIcon, KeyRoundIcon } from "lucide-react";
 import { RequireAuth } from "@/components/require-auth";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,8 +23,6 @@ export default function DashboardPage() {
 }
 
 function DashboardContent() {
-  const { userId } = useAuth();
-
   return (
     <div className="mx-auto max-w-5xl px-4 py-12">
       <h1 className="mb-6 font-heading text-2xl font-semibold">Dashboard</h1>
@@ -48,13 +45,19 @@ function DashboardContent() {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Query</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <KeyRoundIcon className="size-4 text-muted-foreground" />
+              API keys
+            </CardTitle>
             <CardDescription>
-              Ask questions over your collections. Coming in a later release.
+              Create keys to call the query and document APIs from your own code,
+              with per-key rate limits.
             </CardDescription>
           </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Signed in as <code className="font-mono">{userId}</code>.
+          <CardContent>
+            <Button render={<Link href="/dashboard/api-keys/" />} size="sm">
+              Manage API keys
+            </Button>
           </CardContent>
         </Card>
       </div>

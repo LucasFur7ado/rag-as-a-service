@@ -17,7 +17,7 @@
 	"ai": {
 		"binding": "AI"
 	},
-	// --- KV namespace (future API keys / rate limiting) ----------------------
+	// --- KV namespace (read-optimized cache of API-key hashes for auth) ------
 	// TODO: replace the placeholder id with a real namespace id from:
 	//   wrangler kv namespace create RAG_KV
 	"kv_namespaces": [
@@ -99,6 +99,28 @@
 			"name": "ingest-workflow",
 			"binding": "INGEST_WORKFLOW",
 			"class_name": "IngestWorkflow"
+		}
+	],
+	// --- Durable Object (per-API-key rate limiter) ----------------------------
+	// `RateLimiter` (src/durable/ratelimiter.ts, re-exported from src/index.ts)
+	// is an atomic per-key sliding-window counter — chosen over KV (eventually
+	// consistent, per-key write caps) and the native rate-limit binding (fixed
+	// limit/period, no per-key override or exact remaining/reset). SQLite-backed
+	// class (free-tier compatible), though this DO keeps its counter in memory.
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "RATE_LIMITER",
+				"class_name": "RateLimiter"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"RateLimiter"
+			]
 		}
 	]
 	// --- Secrets (set via `wrangler secret put <NAME>`, not committed) --------

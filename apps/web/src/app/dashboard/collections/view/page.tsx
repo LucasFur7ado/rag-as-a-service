@@ -9,6 +9,7 @@ import {
   DownloadIcon,
   FileTextIcon,
   RefreshCwIcon,
+  SparklesIcon,
   Trash2Icon,
   UploadIcon,
 } from "lucide-react";
@@ -96,6 +97,9 @@ function CollectionView() {
   const [toDelete, setToDelete] = useState<Document | null>(null);
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // The Playground can only answer once at least one document is queryable.
+  const hasReadyDocument = (documents ?? []).some((d) => d.status === "ready");
 
   const refresh = useCallback(async () => {
     if (!collectionId) return;
@@ -268,7 +272,7 @@ function CollectionView() {
               </p>
             )}
           </div>
-          <div>
+          <div className="flex items-center gap-2">
             <input
               ref={fileInputRef}
               type="file"
@@ -276,6 +280,23 @@ function CollectionView() {
               className="hidden"
               onChange={handleUpload}
             />
+            <Button
+              render={
+                <Link
+                  href={`/dashboard/collections/playground/?id=${encodeURIComponent(collectionId)}`}
+                />
+              }
+              variant="outline"
+              disabled={!hasReadyDocument}
+              title={
+                hasReadyDocument
+                  ? "Ask questions about this collection"
+                  : "Ingest a document first"
+              }
+            >
+              <SparklesIcon data-icon="inline-start" />
+              Playground
+            </Button>
             <Button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}

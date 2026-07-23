@@ -35,9 +35,11 @@ app.route("/me", me); // protected
 app.route("/v1/collections", collections);
 app.route("/v1/documents", documents);
 
-// Feature stubs (protected, return 501 Not Implemented for now).
-app.route("/query", query);
-app.route("/apikeys", apikeys);
+// Feature 3: RAG query pipeline — POST /v1/collections/:id/query.
+app.route("/v1/collections", query);
+
+// Feature 4: API key management (session-only, tenant-scoped).
+app.route("/v1/api-keys", apikeys);
 
 // --- Error handling -------------------------------------------------------
 app.onError((err, c) => {
@@ -86,3 +88,5 @@ export default {
 
 // Workflow class must be exported for the INGEST_WORKFLOW binding.
 export { IngestWorkflow } from "./workflows/ingest";
+// Durable Object class must be exported for the RATE_LIMITER binding.
+export { RateLimiter } from "./durable/ratelimiter";

@@ -113,44 +113,181 @@ export interface ReingestDocumentResponse {
   document: Document;
 }
 
-/** A request to run a retrieval-augmented query against a collection. */
+/**
+ * Body for POST /v1/collections/:id/query. The collection is addressed by the
+ * URL path; the body carries only the question and tuning overrides.
+ */
 export interface QueryRequest {
-  collectionId: string;
   /** The natural-language question. */
   query: string;
-  /** Max number of source chunks to retrieve. Defaults are provider-specific. */
+  /** Max number of source chunks to retrieve (server clamps to a sane range). */
   topK?: number;
-  /** If true, only retrieve context; skip LLM generation. */
-  retrieveOnly?: boolean;
-}
-
-/** A citation pointing back to the source chunk that supported an answer. */
-export interface Citation {
-  documentId: string;
-  documentName: string;
-  /** Index of the chunk within the document. */
-  chunkIndex: number;
-  /** The retrieved text snippet. */
-  text: string;
-  /** Similarity/relevance score in [0, 1], if the store provides one. */
-  score?: number;
-}
-
-/** The response from a retrieval-augmented query. */
-export interface QueryResponse {
-  /** The generated answer. Empty when `retrieveOnly` was requested. */
-  answer: string;
-  /** Sources that grounded the answer. */
-  citations: Citation[];
-  /** Model identifier that produced the answer, when generation ran. */
-  model?: string;
+  /**
+   * Response mode. `true`/omitted → Server-Sent Events stream of
+   * {@link QueryStreamEvent}s; `false` → a single JSON {@link QueryResponse}
+   * (handy for curl and offline evaluation).
+   */
+  stream?: boolean;
 }
 
 /**
- * The authenticated principal attached to a request after JWT verification.
- * Shared so both apps agree on the shape.
+ * A citation pointing back to the source chunk that grounded (part of) an
+ * answer. `marker` is the `[n]` label the model was told to cite with — the
+ * client uses it to link inline markers in the answer to these entries.
+ */
+export interface Citation {
+  /** 1-based context label, i.e. the `n` in the `[n]` markers in the answer. */
+  marker: number;
+  documentId: string;
+  /** Original filename of the source document, e.g. "report.pdf". */
+  filename: string;
+  /** 1-based page number when the source has pages (PDF); null otherwise. */
+  page: number | null;
+  /** Index of the chunk within the document (stable across re-ingestion). */
+  chunkIndex: number;
+  /** The retrieved chunk text (may be truncated for transport). */
+  snippet: string;
+  /** Similarity score in [0, 1] from the vector store. */
+  score: number;
+  /** Whether the model actually cited this source in the answer. */
+  cited: boolean;
+}
+
+/** Retrieval/generation accounting returned with every query response. */
+export interface QueryUsage {
+  /** Matches returned by the vector store before filtering. */
+  chunksRetrieved: number;
+  /** Chunks that survived threshold/dedupe/budget and entered the context. */
+  chunksUsed: number;
+  /** Tokens of context sent to the model (question and prompt excluded). */
+  contextTokens: number;
+  /**
+   * Markers the model emitted that do NOT correspond to any retrieved chunk
+   * (hallucinated citations). The client should render these as plain text.
+   */
+  invalidMarkers: number[];
+  /** Model identifier that produced the answer. */
+  model: string;
+}
+
+/** The non-streaming (`stream: false`) response shape. */
+export interface QueryResponse {
+  /** The generated answer (markdown, with inline `[n]` citation markers). */
+  answer: string;
+  /** Every source that entered the context, ordered by marker. */
+  sources: Citation[];
+  usage: QueryUsage;
+}
+
+// --- Streaming query events --------------------------------------------------
+// The streaming response is SSE; each `data:` line is one JSON-encoded
+// QueryStreamEvent. Order: zero+ `delta` → one `sources` → one `done`, or an
+// `error` at any point (after which the stream ends).
+
+/** An incremental piece of the generated answer text. */
+export interface QueryDeltaEvent {
+  type: "delta";
+  text: string;
+}
+
+/** Terminal event carrying the resolved citations + usage. */
+export interface QuerySourcesEvent {
+  type: "sources";
+  sources: Citation[];
+  usage: QueryUsage;
+}
+
+/** Stream completed successfully. */
+export interface QueryDoneEvent {
+  type: "done";
+}
+
+/** Stream failed; `message` is safe to show to the user. */
+export interface QueryErrorEvent {
+  type: "error";
+  message: string;
+}
+
+export type QueryStreamEvent =
+  | QueryDeltaEvent
+  | QuerySourcesEvent
+  | QueryDoneEvent
+  | QueryErrorEvent;
+
+/**
+ * How a request authenticated: an interactive Clerk dashboard session, or a
+ * programmatic API key.
+ */
+export type AuthType = "session" | "apikey";
+
+/**
+ * The authenticated principal attached to a request after auth succeeds
+ * (Clerk JWT or API key). Shared so both apps agree on the shape.
  */
 export interface AuthContext {
-  userId: string;
   tenantId: string;
+  /** How the caller authenticated. */
+  authType: AuthType;
+  /** Clerk user id — present only for `session` auth. */
+  userId?: string;
+  /** Id of the API key used — present only for `apikey` auth. */
+  keyId?: string;
+}
+
+// --- API keys (Feature 4) ---------------------------------------------------
+
+/**
+ * An API key as exposed to the dashboard. NEVER contains key material: the
+ * plaintext key is shown exactly once at creation (see {@link ApiKeyCreateResponse})
+ * and only a display prefix + last-4 are retained afterwards.
+ */
+export interface ApiKey {
+  id: string;
+  /** Human-readable label chosen at creation. */
+  name: string;
+  /** Leading display portion, e.g. "rag_live_a1b2". Not usable to authenticate. */
+  keyPrefix: string;
+  /** Last 4 characters of the key, for disambiguation in the UI. */
+  last4: string;
+  /** Per-key request cap, requests per minute. */
+  rateLimitPerMinute: number;
+  createdAt: EpochMillis;
+  /** Last successful auth with this key (throttled write); null if never used. */
+  lastUsedAt?: EpochMillis;
+  /** When the key was revoked; null/absent while active. */
+  revokedAt?: EpochMillis;
+}
+
+/** Body for POST /v1/api-keys. */
+export interface CreateApiKeyRequest {
+  name: string;
+  /** Optional per-key override; defaults to the server's configured limit. */
+  rateLimitPerMinute?: number;
+}
+
+/**
+ * Response for POST /v1/api-keys — the ONLY shape that ever carries the
+ * plaintext key. Show it once, then discard it client-side.
+ */
+export interface ApiKeyCreateResponse {
+  apiKey: ApiKey;
+  /** The full plaintext key, e.g. "rag_live_…". Never returned again. */
+  key: string;
+}
+
+/** Response for GET /v1/api-keys. */
+export interface ListApiKeysResponse {
+  apiKeys: ApiKey[];
+}
+
+/**
+ * Body of a 429 Too Many Requests response from a rate-limited endpoint.
+ * The response also carries `Retry-After` and `RateLimit-*` headers.
+ */
+export interface RateLimitErrorBody {
+  error: string;
+  /** Seconds until the caller may retry (mirrors the `Retry-After` header). */
+  retryAfter: number;
+  /** The limit that was exceeded (requests per minute). */
+  limit: number;
 }

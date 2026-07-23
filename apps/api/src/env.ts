@@ -1,4 +1,5 @@
 import type { AuthContext } from "@rag/shared";
+import type { RateLimiter } from "./durable/ratelimiter";
 
 /**
  * Message shape enqueued on INGEST_QUEUE for async document ingestion. The
@@ -43,12 +44,14 @@ export interface Env {
   INGEST_QUEUE: Queue<IngestMessage>;
   /** Durable ingestion workflow. */
   INGEST_WORKFLOW: Workflow;
-  /** KV namespace for future API keys / rate limiting. */
+  /** KV namespace: read-optimized cache of API-key hashes for the auth path. */
   KV: KVNamespace;
-  /** D1 database for collections/documents metadata (Drizzle schema). */
+  /** D1 database for collections/documents/api-keys metadata (Drizzle schema). */
   DB: D1Database;
   /** R2 bucket holding the raw uploaded documents. */
   RAW_DOCS: R2Bucket;
+  /** Per-API-key rate limiter (Durable Object, atomic sliding-window counter). */
+  RATE_LIMITER: DurableObjectNamespace<RateLimiter>;
 }
 
 /**

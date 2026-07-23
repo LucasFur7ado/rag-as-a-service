@@ -1,4 +1,5 @@
 import { drizzle } from "drizzle-orm/d1";
+import { and, eq } from "drizzle-orm";
 import type { Collection, Document, DocumentStatus } from "@rag/shared";
 import type { Env } from "../env";
 import * as schema from "./schema";
@@ -10,6 +11,29 @@ export function getDb(env: Env) {
 }
 
 export type Db = ReturnType<typeof getDb>;
+
+/**
+ * Load a collection only if it belongs to the tenant; otherwise null.
+ * The tenant-scoping primitive shared by every route that addresses a
+ * collection — a foreign collection is indistinguishable from a missing one.
+ */
+export async function findOwnedCollection(
+  db: Db,
+  tenantId: string,
+  collectionId: string,
+): Promise<CollectionRow | null> {
+  const [row] = await db
+    .select()
+    .from(schema.collections)
+    .where(
+      and(
+        eq(schema.collections.id, collectionId),
+        eq(schema.collections.tenantId, tenantId),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
 
 // --- Row → API shape serializers ------------------------------------------
 // D1 uses NULL where the API contract uses absent/undefined, and `status` is
