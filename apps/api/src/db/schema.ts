@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /**
  * D1 schema (Drizzle). Metadata only — raw files live in R2 under
@@ -83,6 +83,69 @@ export const apiKeys = sqliteTable(
   ],
 );
 
+/**
+ * Usage analytics events (Feature 5). One row per query / ingestion, written
+ * asynchronously OFF the request critical path (via ctx.waitUntil). SQL
+ * aggregation over this table backs the analytics dashboard.
+ *
+ * Privacy: raw query text is NOT stored by default — only `queryHash` +
+ * `queryLength`. Plaintext is gated behind the STORE_RAW_QUERY_TEXT config
+ * flag (default off) and lands in `queryText` only when enabled.
+ *
+ * Indexed for the dashboard aggregations: `(tenant_id, created_at)` is the
+ * workhorse composite (every endpoint filters by tenant + time range);
+ * secondary indexes support the collection/status groupings.
+ */
+export const usageEvents = sqliteTable(
+  "usage_events",
+  {
+    id: text("id").primaryKey(), // uuid
+    tenantId: text("tenant_id").notNull(),
+    /** 'query' | 'ingestion' — see UsageEventType. */
+    eventType: text("event_type").notNull(),
+    /** Epoch ms; primary time axis for every aggregation. */
+    createdAt: integer("created_at").notNull(),
+    collectionId: text("collection_id"),
+    documentId: text("document_id"),
+    /** 'session' | 'apikey' — how the originating request authenticated. */
+    authType: text("auth_type").notNull(),
+    apiKeyId: text("api_key_id"),
+    /** 'success' | 'error' | 'rate_limited' | 'no_results' — UsageEventStatus. */
+    status: text("status").notNull(),
+    errorCode: text("error_code"),
+    // --- Latency, split by pipeline stage (ms) ----------------------------
+    latencyTotalMs: integer("latency_total_ms"),
+    latencyEmbedMs: integer("latency_embed_ms"),
+    latencyRetrievalMs: integer("latency_retrieval_ms"),
+    latencyGenerationMs: integer("latency_generation_ms"),
+    // --- Retrieval accounting ---------------------------------------------
+    chunksRetrieved: integer("chunks_retrieved"),
+    topScore: real("top_score"),
+    // --- Token accounting + cost ------------------------------------------
+    tokensPrompt: integer("tokens_prompt"),
+    tokensCompletion: integer("tokens_completion"),
+    estimatedCost: real("estimated_cost"),
+    // --- Query privacy: hash + length, never raw text (unless flagged) ----
+    queryHash: text("query_hash"),
+    queryLength: integer("query_length"),
+    /** Plaintext query — populated ONLY when STORE_RAW_QUERY_TEXT is enabled. */
+    queryText: text("query_text"),
+    // --- Ingestion-only accounting ----------------------------------------
+    bytesProcessed: integer("bytes_processed"),
+    chunkCount: integer("chunk_count"),
+  },
+  (t) => [
+    // Workhorse: every endpoint filters tenant + time range.
+    index("usage_events_tenant_created_idx").on(t.tenantId, t.createdAt),
+    // Collection filter + "by collection" breakdown within a tenant/range.
+    index("usage_events_tenant_collection_idx").on(t.tenantId, t.collectionId),
+    // Splits the query vs ingestion streams within a tenant/range.
+    index("usage_events_tenant_type_idx").on(t.tenantId, t.eventType),
+  ],
+);
+
 export type CollectionRow = typeof collections.$inferSelect;
 export type DocumentRow = typeof documents.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
+export type UsageEventRow = typeof usageEvents.$inferSelect;
+export type NewUsageEventRow = typeof usageEvents.$inferInsert;

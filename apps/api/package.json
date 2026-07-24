@@ -8,6 +8,7 @@
     "deploy": "wrangler deploy",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "lint": "echo \"(no lint configured for api)\"",
     "cf-typegen": "wrangler types",
     "db:generate": "drizzle-kit generate",
@@ -26,6 +27,7 @@
     "@cloudflare/workers-types": "^5.20260721.1",
     "drizzle-kit": "^0.31.10",
     "typescript": "^5.9.2",
+    "vitest": "^4.1.10",
     "wrangler": "^4.112.0"
   }
 }

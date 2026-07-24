@@ -8,6 +8,8 @@ import { collections } from "./routes/collections";
 import { documents } from "./routes/documents";
 import { query } from "./routes/query";
 import { apikeys } from "./routes/apikeys";
+import { analytics } from "./routes/analytics";
+import { pruneUsageEvents } from "./services/analytics-retention";
 
 const app = new Hono<AppBindings>();
 
@@ -40,6 +42,9 @@ app.route("/v1/collections", query);
 
 // Feature 4: API key management (session-only, tenant-scoped).
 app.route("/v1/api-keys", apikeys);
+
+// Feature 5: usage analytics dashboard API (session-only, tenant-scoped).
+app.route("/v1/analytics", analytics);
 
 // --- Error handling -------------------------------------------------------
 app.onError((err, c) => {
@@ -81,9 +86,29 @@ async function queue(
   }
 }
 
+/**
+ * Cron handler (Feature 5): prune `usage_events` older than the retention
+ * window. Declared in wrangler.jsonc under `triggers.crons`; runs daily. The
+ * prune is wrapped in `ctx.waitUntil` so the deletion completes even if the
+ * handler returns first, and failures are logged (a missed prune just retries
+ * on the next tick — it never affects request traffic).
+ */
+async function scheduled(
+  _event: ScheduledController,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<void> {
+  ctx.waitUntil(
+    pruneUsageEvents(env).catch((err) =>
+      console.error("usage_events retention prune failed:", err),
+    ),
+  );
+}
+
 export default {
   fetch: app.fetch,
   queue,
+  scheduled,
 };
 
 // Workflow class must be exported for the INGEST_WORKFLOW binding.

@@ -435,6 +435,76 @@ Tunables in [`config.ts`](apps/api/src/config.ts): `DEFAULT_RATE_LIMIT_PER_MINUT
 `MAX_RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_WINDOW_MS`, `LAST_USED_THROTTLE_MS`,
 `API_KEY_PREFIX`, `API_KEY_RANDOM_BYTES`.
 
+## Usage analytics (Feature 5)
+
+Every query and ingestion is recorded as a row in the D1 `usage_events` table
+and surfaced on a dashboard at **`/dashboard/analytics`** (KPI cards with
+period-over-period deltas + sparklines, a stacked queries-over-time chart with a
+p95 latency line, latency-by-stage and by-collection breakdowns, an outcome
+donut, token/cost over time, ingestion stats, and a paginated drill-down table
+with a per-event detail sheet).
+
+**What's tracked.** For **queries**: per-stage latency (embedding / retrieval /
+generation) and total, chunks retrieved, top similarity score, prompt/completion
+tokens, estimated cost, auth type, collection, and outcome — including the
+`no_results` (nothing relevant retrieved), `error` (pipeline failure), and
+`rate_limited` (429) cases, not just successes. For **ingestion**: duration,
+chunk count, bytes processed, and success/failure. See the
+[`usage_events` schema](apps/api/src/db/schema.ts) and the
+[`UsageEvent` type](packages/shared/src/index.ts).
+
+**Writes are off the critical path.** A user request must never be slowed or
+failed by analytics, so every write goes through `ctx.waitUntil(...)` (never
+awaited before responding) and the recorder swallows its own errors (logs
+only). Token counting and cost estimation also run *inside* the deferred
+closure, so instrumentation adds no latency. Deliberately breaking the analytics
+write has zero effect on the query response. The instrumentation lives in the
+[query route](apps/api/src/routes/query.ts), the
+[auth middleware](apps/api/src/lib/auth.ts) (429s), and the
+[ingest workflow](apps/api/src/workflows/ingest.ts).
+
+**Why D1 now, Analytics Engine at scale.** At portfolio scale, D1 is the
+pragmatic primary store: SQL aggregation (`GROUP BY`, window-function
+percentiles) keeps the dashboard queries simple and, crucially, **readable back
+from the Worker**. At high write volume D1's single-writer model becomes a
+bottleneck — that's where **Workers Analytics Engine** is the right answer:
+`writeDataPoint` is unbounded, fire-and-forget, and effectively free. Events are
+therefore **dual-written** to Analytics Engine (binding `USAGE_ANALYTICS`)
+behind the swappable [`AnalyticsRecorder`](apps/api/src/services/analytics.ts)
+interface. The catch (verified against the current docs): Analytics Engine is
+**write-only from a Worker** — reading it back needs the account-level SQL API
+and a token — so the dashboard still reads D1, and the dual-write is *additive*,
+not a replacement, at this scale.
+
+**Privacy — raw query text is not stored by default.** We keep a SHA-256 hash of
+the query plus its length (enough to spot duplicate/abusive queries) but **not
+the text**. Plaintext storage is gated behind the `STORE_RAW_QUERY_TEXT` flag in
+[`config.ts`](apps/api/src/config.ts), which defaults to **`false`**; the
+event-detail sheet says so explicitly when text is absent. No chunk contents are
+ever stored.
+
+**Retention.** A daily **cron trigger** (`triggers.crons` in
+[`wrangler.jsonc`](apps/api/wrangler.jsonc), handled by `scheduled` in
+[`index.ts`](apps/api/src/index.ts)) prunes `usage_events` older than
+`ANALYTICS_RETENTION_DAYS` (default **90**). Test the prune locally with
+`wrangler dev --test-scheduled` then
+`curl "http://localhost:8787/__scheduled?cron=0+3+*+*+*"`.
+
+**API** (session-only — analytics is a dashboard feature, not part of the public
+API; an API key gets a 401): `GET /v1/analytics/{summary,timeseries,breakdown,recent,ingestion}`,
+all tenant-scoped and accepting `from`/`to` (epoch ms or ISO) + optional
+`collectionId`. Aggregation happens entirely in SQL
+([`analytics-queries.ts`](apps/api/src/services/analytics-queries.ts)); no
+endpoint pulls raw rows to reduce in JS. Percentiles use a single tested helper
+([`percentile.ts`](apps/api/src/lib/percentile.ts) +
+[`percentile.test.ts`](apps/api/src/lib/percentile.test.ts)) whose nearest-rank
+formula is mirrored into the SQL `ROW_NUMBER()` filter.
+
+Config knobs in [`config.ts`](apps/api/src/config.ts): `ANALYTICS_RETENTION_DAYS`,
+`STORE_RAW_QUERY_TEXT`, `ANALYTICS_DEFAULT_RANGE_DAYS`, `MODEL_COSTS` /
+`DEFAULT_MODEL_COST` (per-model per-token rates for cost estimation — a rough
+*relative* signal, not a billing figure).
+
 ## Run in dev
 
 First, apply the D1 migrations to the local (miniflare) database — `wrangler
@@ -538,9 +608,12 @@ See [`apps/web/README.md`](apps/web/README.md) for the static-export details.
 
 ## What is intentionally NOT implemented
 
-Billing/plans/quotas (beyond the per-minute rate limit), usage analytics, and
-**API-key scopes/permissions** — all keys are currently full-access for their
-tenant (`// TODO: scopes` in [`apikeys.ts`](apps/api/src/services/apikeys.ts)).
+Billing/plans/quotas (beyond the per-minute rate limit) and **API-key
+scopes/permissions** — all keys are currently full-access for their tenant
+(`// TODO: scopes` in [`apikeys.ts`](apps/api/src/services/apikeys.ts)). Out of
+scope for the [analytics feature](#usage-analytics-feature-5) specifically:
+billing/invoicing, per-user (sub-tenant) attribution, alerting, report export,
+and real-time streaming updates (the dashboard refetches on filter change).
 Within the query pipeline (Feature 3), also out of scope: **re-ranking** with a
 cross-encoder (clean insertion point marked between retrieval and context
 assembly), query rewriting / HyDE / multi-query, semantic caching, an evaluation

@@ -180,7 +180,8 @@ collections.delete("/:id", async (c) => {
 // future optimization is returning a presigned R2 URL so the browser uploads
 // directly and the Worker only records metadata.
 collections.post("/:id/documents", async (c) => {
-  const { tenantId } = c.get("auth");
+  const auth = c.get("auth");
+  const { tenantId } = auth;
   const db = getDb(c.env);
   const collection = await findOwnedCollection(db, tenantId, c.req.param("id"));
   if (!collection) throw new HTTPException(404, { message: "Collection not found" });
@@ -252,6 +253,8 @@ collections.post("/:id/documents", async (c) => {
       tenantId,
       collectionId: collection.id,
       documentId,
+      authType: auth.authType,
+      apiKeyId: auth.keyId ?? null,
     });
   } catch (err) {
     console.error(`Failed to enqueue ingestion for document ${documentId}:`, err);

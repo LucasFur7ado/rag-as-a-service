@@ -23,6 +23,7 @@ import {
   MAX_EMBED_BATCH_SIZE,
   VECTOR_TEXT_METADATA_MAX_CHARS,
 } from "../config";
+import { resolveRecorder } from "../services/analytics";
 
 /**
  * Durable ingestion pipeline: parse → chunk → embed → upsert → finalize.
@@ -63,6 +64,9 @@ export class IngestWorkflow extends WorkflowEntrypoint<Env, IngestMessage> {
   ): Promise<void> {
     const { tenantId, collectionId, documentId } = event.payload;
     const db = getDb(this.env);
+    // Captured from the mark-processing step (memoized, so stable across
+    // replays) for the analytics event recorded at the end / on failure.
+    let ingestMeta: { startedAt: number; sizeBytes: number } | null = null;
 
     try {
       // -- 1. Claim the document: 'processing' + record this instance -------
@@ -89,8 +93,16 @@ export class IngestWorkflow extends WorkflowEntrypoint<Env, IngestMessage> {
             updatedAt: Date.now(),
           })
           .where(eq(documentsTable.id, documentId));
-        return { r2Key: row.r2Key, filename: row.filename, contentType: row.contentType };
+        return {
+          r2Key: row.r2Key,
+          filename: row.filename,
+          contentType: row.contentType,
+          sizeBytes: row.sizeBytes,
+          // Timing anchor for ingestion duration (memoized with the step).
+          startedAt: Date.now(),
+        };
       });
+      ingestMeta = { startedAt: doc.startedAt, sizeBytes: doc.sizeBytes };
 
       // -- 2. Fetch from R2 and extract plain text (with page numbers) ------
       const extracted = await step.do("extract text", STEP_CONFIG, async () => {
@@ -208,6 +220,25 @@ export class IngestWorkflow extends WorkflowEntrypoint<Env, IngestMessage> {
           })
           .where(eq(documentsTable.id, documentId));
       });
+
+      // -- 7. Record the successful ingestion for analytics -----------------
+      // Best-effort and inside a step (memoized, so it records exactly once
+      // even if run() replays). The recorder swallows its own errors, so this
+      // step never fails ingestion.
+      await step.do("record ingestion analytics", STEP_CONFIG, async () => {
+        await resolveRecorder(this.env).record({
+          tenantId,
+          eventType: "ingestion",
+          collectionId,
+          documentId,
+          authType: event.payload.authType ?? "session",
+          apiKeyId: event.payload.apiKeyId ?? null,
+          status: "success",
+          chunkCount: chunked.chunkCount,
+          bytesProcessed: doc.sizeBytes,
+          latencyTotalMs: Date.now() - doc.startedAt,
+        });
+      });
     } catch (err) {
       // Any step that exhausted its retries (or failed fast) lands here:
       // record a readable error on the document, then let the instance error
@@ -227,6 +258,22 @@ export class IngestWorkflow extends WorkflowEntrypoint<Env, IngestMessage> {
               eq(documentsTable.tenantId, tenantId),
             ),
           );
+      });
+
+      // Record the failed ingestion (best-effort, once, inside a step).
+      await step.do("record ingestion failure", STEP_CONFIG, async () => {
+        await resolveRecorder(this.env).record({
+          tenantId,
+          eventType: "ingestion",
+          collectionId,
+          documentId,
+          authType: event.payload.authType ?? "session",
+          apiKeyId: event.payload.apiKeyId ?? null,
+          status: "error",
+          errorCode: "ingestion_failed",
+          bytesProcessed: ingestMeta?.sizeBytes ?? null,
+          latencyTotalMs: ingestMeta ? Date.now() - ingestMeta.startedAt : null,
+        });
       });
       throw err;
     }

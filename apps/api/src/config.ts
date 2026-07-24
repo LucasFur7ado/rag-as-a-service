@@ -112,3 +112,74 @@ export const LAST_USED_THROTTLE_MS = 60_000;
 // Session (dashboard) traffic is intentionally NOT rate-limited here: it is
 // Clerk-gated, interactive, and low-volume, and the product surface we are
 // protecting is programmatic API-key traffic. See README → Rate limiting.
+
+// --- Usage analytics (Feature 5) --------------------------------------------
+/**
+ * How long `usage_events` rows are retained. A scheduled cron trigger
+ * (see wrangler.jsonc `triggers.crons` + the `scheduled` handler) prunes rows
+ * older than this window each day. Portfolio-scale volume; tune per storage
+ * budget. Documented in the README → Analytics retention.
+ */
+export const ANALYTICS_RETENTION_DAYS = 90;
+
+/**
+ * Whether to persist the raw plaintext query text on `usage_events`. OFF by
+ * default for privacy — only a SHA-256 hash + length are stored (enough to
+ * spot duplicate/abusive queries without retaining user content). Flip to
+ * `true` ONLY with a clear reason and disclosure. See README → Privacy.
+ */
+export const STORE_RAW_QUERY_TEXT = false;
+
+/**
+ * Default dashboard window when the UI doesn't specify one, in days. The web
+ * date-range picker defaults to this; the API never assumes a range.
+ */
+export const ANALYTICS_DEFAULT_RANGE_DAYS = 7;
+
+/**
+ * Per-model cost constants (USD) used to estimate query cost from token
+ * counts. Workers AI bills in "Neurons", not tokens, and prices shift; these
+ * are deliberately rough per-token rates for a *relative* cost signal in the
+ * dashboard, NOT a billing source of truth (billing is out of scope). Rates
+ * are USD per single token (i.e. per-1K-token price / 1000). Update when the
+ * Workers AI pricing page changes, or when swapping GENERATION_MODEL.
+ */
+export const MODEL_COSTS: Record<
+  string,
+  { inputPerToken: number; outputPerToken: number }
+> = {
+  // Llama 3.3 70B fp8 fast — generation model (see GENERATION_MODEL).
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
+    inputPerToken: 0.29 / 1_000_000, // ~$0.29 / 1M input tokens
+    outputPerToken: 2.25 / 1_000_000, // ~$2.25 / 1M output tokens
+  },
+  // BGE-M3 embeddings — priced per input token (output has no token cost).
+  "@cf/baai/bge-m3": {
+    inputPerToken: 0.012 / 1_000_000, // ~$0.012 / 1M input tokens
+    outputPerToken: 0,
+  },
+};
+
+/** Fallback per-token rates for a model not present in MODEL_COSTS. */
+export const DEFAULT_MODEL_COST = {
+  inputPerToken: 0.5 / 1_000_000,
+  outputPerToken: 1.5 / 1_000_000,
+};
+
+/**
+ * Estimate the USD cost of a generation from its token counts, using
+ * {@link MODEL_COSTS} (falling back to {@link DEFAULT_MODEL_COST}). A rough,
+ * relative signal for the dashboard — NOT a billing figure (see the comment
+ * on MODEL_COSTS). Unknown token counts contribute 0.
+ */
+export function estimateCost(
+  model: string,
+  promptTokens: number | null | undefined,
+  completionTokens: number | null | undefined,
+): number {
+  const rate = MODEL_COSTS[model] ?? DEFAULT_MODEL_COST;
+  return (
+    (promptTokens ?? 0) * rate.inputPerToken +
+    (completionTokens ?? 0) * rate.outputPerToken
+  );
+}

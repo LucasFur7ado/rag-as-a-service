@@ -291,3 +291,174 @@ export interface RateLimitErrorBody {
   /** The limit that was exceeded (requests per minute). */
   limit: number;
 }
+
+// --- Usage analytics (Feature 5) --------------------------------------------
+
+/** What kind of operation an analytics event records. */
+export type UsageEventType = "query" | "ingestion";
+
+/**
+ * Outcome of a recorded event. `no_results` is a successful query that
+ * retrieved nothing relevant; `rate_limited` is a 429 (recorded cheaply,
+ * never triggering downstream work); `error` is any failure.
+ */
+export type UsageEventStatus =
+  | "success"
+  | "error"
+  | "rate_limited"
+  | "no_results";
+
+/**
+ * One recorded usage event. Mirrors the D1 `usage_events` row
+ * (apps/api/src/db/schema.ts). Privacy: raw query text is NEVER included —
+ * only a hash and length (see the `STORE_RAW_QUERY_TEXT` flag / README).
+ * Nullable columns surface as `null` (D1-native) rather than absent.
+ */
+export interface UsageEvent {
+  id: string;
+  tenantId: string;
+  eventType: UsageEventType;
+  /** Epoch ms when the event occurred. */
+  createdAt: EpochMillis;
+  collectionId: string | null;
+  documentId: string | null;
+  authType: AuthType;
+  apiKeyId: string | null;
+  status: UsageEventStatus;
+  /** Machine-readable error code when `status === "error"`; else null. */
+  errorCode: string | null;
+  // --- Latency, split by pipeline stage (ms); null when not applicable. ---
+  latencyTotalMs: number | null;
+  latencyEmbedMs: number | null;
+  latencyRetrievalMs: number | null;
+  latencyGenerationMs: number | null;
+  // --- Retrieval accounting -----------------------------------------------
+  chunksRetrieved: number | null;
+  topScore: number | null;
+  // --- Token accounting + cost --------------------------------------------
+  tokensPrompt: number | null;
+  tokensCompletion: number | null;
+  estimatedCost: number | null;
+  /** Character length of the (un-stored) query text; null for ingestion. */
+  queryLength: number | null;
+  // --- Ingestion-only accounting ------------------------------------------
+  /** Bytes of source processed (ingestion events). */
+  bytesProcessed: number | null;
+  /** Chunks produced by an ingestion run. */
+  chunkCount: number | null;
+  /** Optional plaintext query — present only when STORE_RAW_QUERY_TEXT is on. */
+  queryText?: string | null;
+}
+
+/**
+ * Shared range + filter query parameters accepted by every analytics endpoint.
+ * `from`/`to` are epoch ms (the client normalizes ISO input before sending).
+ */
+export interface AnalyticsRangeParams {
+  /** Inclusive start of the window, epoch ms. */
+  from: EpochMillis;
+  /** Exclusive end of the window, epoch ms. */
+  to: EpochMillis;
+  /** Optional collection filter; omit for all collections. */
+  collectionId?: string;
+}
+
+/**
+ * A single KPI value paired with its value in the previous equivalent period,
+ * so the UI can render a delta (green/red arrow) without a second request.
+ */
+export interface MetricWithDelta {
+  value: number;
+  /** Same metric over the immediately preceding window of equal length. */
+  previous: number;
+}
+
+/** Response for GET /v1/analytics/summary — KPI totals + previous period. */
+export interface AnalyticsSummary {
+  /** The window these numbers cover (echoed back for the UI). */
+  range: { from: EpochMillis; to: EpochMillis };
+  totalQueries: MetricWithDelta;
+  /** Fraction in [0, 1] of queries whose status was `success`. */
+  successRate: MetricWithDelta;
+  /** p50 latency (ms) over the window. */
+  p50LatencyMs: MetricWithDelta;
+  /** p95 latency (ms) over the window. */
+  p95LatencyMs: MetricWithDelta;
+  totalTokens: MetricWithDelta;
+  estimatedCost: MetricWithDelta;
+  /** Distinct collections queried in the window. */
+  activeCollections: MetricWithDelta;
+  errorCount: MetricWithDelta;
+  rateLimitedCount: MetricWithDelta;
+}
+
+/** Bucket granularity for the time-series endpoint. */
+export type TimeseriesGranularity = "hour" | "day";
+
+/** One bucket of the time series. Counts are split by outcome. */
+export interface TimeseriesPoint {
+  /** Bucket start, epoch ms. */
+  bucket: EpochMillis;
+  success: number;
+  error: number;
+  rateLimited: number;
+  noResults: number;
+  /** Average total latency (ms) of queries in the bucket; null if none. */
+  avgLatencyMs: number | null;
+  /** p95 total latency (ms) of queries in the bucket; null if none. */
+  p95LatencyMs: number | null;
+  /** Total tokens (prompt + completion) in the bucket. */
+  tokens: number;
+  /** Estimated cost accrued in the bucket. */
+  estimatedCost: number;
+}
+
+/** Response for GET /v1/analytics/timeseries. */
+export interface TimeseriesResponse {
+  granularity: TimeseriesGranularity;
+  points: TimeseriesPoint[];
+}
+
+/** A labeled count, used across the breakdown groupings. */
+export interface BreakdownCount {
+  key: string;
+  /** Human-readable label (e.g. a collection name); falls back to `key`. */
+  label: string;
+  count: number;
+}
+
+/** Average latency split by pipeline stage (ms) across the window. */
+export interface StageLatency {
+  embed: number | null;
+  retrieval: number | null;
+  generation: number | null;
+}
+
+/** Response for GET /v1/analytics/breakdown. */
+export interface BreakdownResponse {
+  byCollection: BreakdownCount[];
+  byStatus: BreakdownCount[];
+  byAuthType: BreakdownCount[];
+  stageLatency: StageLatency;
+}
+
+/** Response for GET /v1/analytics/ingestion. */
+export interface IngestionStats {
+  /** Ingestion runs recorded in the window (any outcome). */
+  documentsProcessed: number;
+  /** Average successful ingestion duration (ms); null if none. */
+  avgDurationMs: number | null;
+  /** Average chunks produced per successful ingestion; null if none. */
+  avgChunksPerDoc: number | null;
+  /** Fraction in [0, 1] of ingestion runs that failed. */
+  failureRate: number;
+  /** Total bytes processed across successful ingestion runs. */
+  totalBytesProcessed: number;
+}
+
+/** Response for GET /v1/analytics/recent — paginated drill-down rows. */
+export interface RecentEventsResponse {
+  events: UsageEvent[];
+  /** Cursor (epoch ms + id) for the next page, or null when exhausted. */
+  nextCursor: string | null;
+}

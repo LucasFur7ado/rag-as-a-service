@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FolderIcon, KeyRoundIcon } from "lucide-react";
+import { BarChart3Icon, FolderIcon, KeyRoundIcon } from "lucide-react";
 import { RequireAuth } from "@/components/require-auth";
 import { Button } from "@/components/ui/button";
 import {
@@ -57,6 +57,23 @@ function DashboardContent() {
           <CardContent>
             <Button render={<Link href="/dashboard/api-keys/" />} size="sm">
               Manage API keys
+            </Button>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BarChart3Icon className="size-4 text-muted-foreground" />
+              Analytics
+            </CardTitle>
+            <CardDescription>
+              Track query volume, latency, token usage, cost, and ingestion —
+              with time-series charts and a drill-down.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button render={<Link href="/dashboard/analytics/" />} size="sm">
+              View analytics
             </Button>
           </CardContent>
         </Card>

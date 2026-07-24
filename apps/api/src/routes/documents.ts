@@ -70,7 +70,8 @@ documents.get("/:id/status", async (c) => {
 // Safe to repeat: vector ids are deterministic, so a re-run overwrites the
 // document's vectors instead of duplicating them.
 documents.post("/:id/reingest", async (c) => {
-  const { tenantId } = c.get("auth");
+  const auth = c.get("auth");
+  const { tenantId } = auth;
   const row = await findOwnedDocument(getDb(c.env), tenantId, c.req.param("id"));
   if (!row) throw new HTTPException(404, { message: "Document not found" });
   if (row.status === "processing") {
@@ -81,6 +82,8 @@ documents.post("/:id/reingest", async (c) => {
     tenantId,
     collectionId: row.collectionId,
     documentId: row.id,
+    authType: auth.authType,
+    apiKeyId: auth.keyId ?? null,
   });
 
   return c.json({ document: toDocument(row) }, 202);

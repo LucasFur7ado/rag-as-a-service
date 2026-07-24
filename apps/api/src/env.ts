@@ -1,4 +1,4 @@
-import type { AuthContext } from "@rag/shared";
+import type { AuthContext, AuthType } from "@rag/shared";
 import type { RateLimiter } from "./durable/ratelimiter";
 
 /**
@@ -10,6 +10,14 @@ export interface IngestMessage {
   tenantId: string;
   collectionId: string;
   documentId: string;
+  /**
+   * How the request that triggered ingestion authenticated — carried through
+   * for usage analytics (Feature 5). Optional for backward-compat with any
+   * message enqueued before this field existed; the workflow defaults it.
+   */
+  authType?: AuthType;
+  /** API key id when `authType === 'apikey'`; null/absent otherwise. */
+  apiKeyId?: string | null;
 }
 
 /**
@@ -52,6 +60,13 @@ export interface Env {
   RAW_DOCS: R2Bucket;
   /** Per-API-key rate limiter (Durable Object, atomic sliding-window counter). */
   RATE_LIMITER: DurableObjectNamespace<RateLimiter>;
+  /**
+   * Workers Analytics Engine dataset for usage events (Feature 5). Optional:
+   * when bound, events are dual-written here in addition to D1 (the correct
+   * backend at high write volume — see services/analytics.ts). Absent in
+   * environments that only use D1.
+   */
+  USAGE_ANALYTICS?: AnalyticsEngineDataset;
 }
 
 /**

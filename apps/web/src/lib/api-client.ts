@@ -1,19 +1,26 @@
 import type {
+  AnalyticsSummary,
   ApiKeyCreateResponse,
   AuthContext,
+  BreakdownResponse,
   Collection,
   CreateApiKeyRequest,
   CreateCollectionRequest,
   Document,
   DocumentStatusResponse,
+  IngestionStats,
   ListApiKeysResponse,
   ListCollectionsResponse,
   ListDocumentsResponse,
   QueryRequest,
   QueryResponse,
   QueryStreamEvent,
+  RecentEventsResponse,
   ReingestDocumentResponse,
+  TimeseriesGranularity,
+  TimeseriesResponse,
   UploadDocumentResponse,
+  UsageEventStatus,
 } from "@rag/shared";
 
 /**
@@ -269,7 +276,53 @@ export function createApiClient(getToken: TokenGetter, baseUrl: string = API_URL
         `/v1/collections/${encodeURIComponent(collectionId)}/query`,
         { method: "POST", body: JSON.stringify({ ...body, stream: false }) },
       ),
+
+    // --- Analytics (session-only; see /v1/analytics) -----------------------
+    getAnalyticsSummary: (params: AnalyticsQuery) =>
+      request<AnalyticsSummary>(`/v1/analytics/summary${analyticsQs(params)}`),
+
+    getAnalyticsTimeseries: (
+      params: AnalyticsQuery & { granularity?: TimeseriesGranularity },
+    ) =>
+      request<TimeseriesResponse>(
+        `/v1/analytics/timeseries${analyticsQs(params)}`,
+      ),
+
+    getAnalyticsBreakdown: (params: AnalyticsQuery) =>
+      request<BreakdownResponse>(`/v1/analytics/breakdown${analyticsQs(params)}`),
+
+    getAnalyticsIngestion: (params: AnalyticsQuery) =>
+      request<IngestionStats>(`/v1/analytics/ingestion${analyticsQs(params)}`),
+
+    getAnalyticsRecent: (
+      params: AnalyticsQuery & {
+        status?: UsageEventStatus;
+        limit?: number;
+        cursor?: string | null;
+      },
+    ) => request<RecentEventsResponse>(`/v1/analytics/recent${analyticsQs(params)}`),
   };
+}
+
+/** Common range + collection filter accepted by every analytics endpoint. */
+export interface AnalyticsQuery {
+  /** Inclusive start, epoch ms. */
+  from: number;
+  /** Exclusive end, epoch ms. */
+  to: number;
+  /** Optional collection filter; omit / undefined for all collections. */
+  collectionId?: string;
+}
+
+/** Serialize analytics query params to a `?a=b&…` string (skips empties). */
+function analyticsQs(params: object): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+    qs.set(key, String(value));
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : "";
 }
 
 export type ApiClient = ReturnType<typeof createApiClient>;

@@ -7,19 +7,22 @@ import type {
   QueryResponse,
   QueryStreamEvent,
   QueryUsage,
+  UsageEventStatus,
 } from "@rag/shared";
 import type { AppBindings } from "../env";
 import { requireAuth } from "../lib/auth";
 import { findOwnedCollection, getDb } from "../db";
 import { documents as documentsTable } from "../db/schema";
-import { MAX_QUERY_LENGTH, MAX_TOP_K, TOP_K } from "../config";
+import { estimateCost, MAX_QUERY_LENGTH, MAX_TOP_K, TOP_K } from "../config";
+import { countTokens } from "../lib/tokens";
 import { WorkersAiEmbeddingProvider } from "../services/embeddings";
 import { PineconeVectorStore } from "../services/vectorstore";
-import { retrieveChunks } from "../services/retrieval";
+import { retrieveChunks, type RetrievalResult } from "../services/retrieval";
 import { assembleContext } from "../services/context";
 import { resolveCitations } from "../services/citations";
 import { WorkersAiLlmProvider, type LlmMessage } from "../services/llm";
 import { RAG_SYSTEM_PROMPT, buildUserPrompt } from "../prompts";
+import { resolveRecorder, type RecordEventInput } from "../services/analytics";
 
 /**
  * Query API (protected, tenant-scoped): POST /v1/collections/:id/query.
@@ -34,13 +37,21 @@ import { RAG_SYSTEM_PROMPT, buildUserPrompt } from "../prompts";
  * - default: SSE stream of QueryStreamEvents — `delta`* → `sources` → `done`
  *   (or `error`).
  * - `stream: false`: one JSON QueryResponse `{ answer, sources, usage }`.
+ *
+ * Analytics (Feature 5): every outcome — success, `no_results`, and pipeline
+ * errors — is recorded via {@link recordUsage}, ALWAYS through
+ * `executionCtx.waitUntil` and never awaited before responding. Stage timings
+ * (embed / retrieval / generation) and token counts are computed OFF the
+ * request path (inside the deferred closure), so instrumentation adds no
+ * latency and a failing metric write cannot affect the query response.
  */
 export const query = new Hono<AppBindings>();
 
 query.use("*", requireAuth);
 
 query.post("/:id/query", async (c) => {
-  const { tenantId } = c.get("auth");
+  const auth = c.get("auth");
+  const { tenantId } = auth;
 
   // --- Validate the request ------------------------------------------------
   let body: QueryRequest;
@@ -88,15 +99,80 @@ query.post("/:id/query", async (c) => {
     });
   }
 
+  // --- Analytics recording (all off the critical path) ---------------------
+  // Fields common to every event for this request; per-outcome fields are
+  // merged in at each exit. `answerText`/`promptText` are counted into tokens
+  // INSIDE the deferred closure so token counting never runs on the hot path.
+  const pipelineStart = Date.now();
+  const llm = new WorkersAiLlmProvider(c.env.AI);
+
+  const recordUsage = (
+    extra: Partial<RecordEventInput> & {
+      status: UsageEventStatus;
+      promptText?: string;
+      answerText?: string;
+    },
+  ): void => {
+    const { promptText, answerText, ...fields } = extra;
+    try {
+      c.executionCtx.waitUntil(
+        (async () => {
+          // Token counting + cost happen here (deferred), not on the request path.
+          let tokensPrompt: number | null = null;
+          let tokensCompletion: number | null = null;
+          let estimatedCost: number | null = null;
+          if (answerText != null) {
+            tokensPrompt = promptText ? countTokens(promptText) : null;
+            tokensCompletion = countTokens(answerText);
+            estimatedCost = estimateCost(
+              llm.defaultModel,
+              tokensPrompt,
+              tokensCompletion,
+            );
+          }
+          await resolveRecorder(c.env).record({
+            tenantId,
+            eventType: "query",
+            collectionId: collection.id,
+            authType: auth.authType,
+            apiKeyId: auth.keyId ?? null,
+            queryText: question,
+            queryLength: question.length,
+            tokensPrompt,
+            tokensCompletion,
+            estimatedCost,
+            ...fields,
+          });
+        })(),
+      );
+    } catch (err) {
+      console.error("Failed to enqueue query usage event:", err);
+    }
+  };
+
   // --- Retrieve ------------------------------------------------------------
   const embedder = new WorkersAiEmbeddingProvider(c.env.AI);
   const store = new PineconeVectorStore(c.env);
-  const retrieved = await retrieveChunks(embedder, store, {
-    tenantId,
-    collectionId: collection.id,
-    query: question,
-    topK,
-  });
+  let retrieval: RetrievalResult;
+  try {
+    retrieval = await retrieveChunks(embedder, store, {
+      tenantId,
+      collectionId: collection.id,
+      query: question,
+      topK,
+    });
+  } catch (err) {
+    recordUsage({
+      status: "error",
+      errorCode: "retrieval_failed",
+      latencyTotalMs: Date.now() - pipelineStart,
+    });
+    throw err;
+  }
+  const retrieved = retrieval.chunks;
+  const topScore = retrieved.length
+    ? Math.max(...retrieved.map((r) => r.score))
+    : null;
 
   // TODO (next): re-ranking — a cross-encoder over `retrieved` slots in here,
   // before context assembly, to re-score the top-k on the actual question.
@@ -104,6 +180,16 @@ query.post("/:id/query", async (c) => {
   // --- Assemble context ----------------------------------------------------
   const context = assembleContext(retrieved);
   if (context.sources.length === 0) {
+    // A successful search that surfaced nothing relevant — a distinct outcome.
+    recordUsage({
+      status: "no_results",
+      errorCode: "no_relevant_content",
+      latencyEmbedMs: retrieval.embedMs,
+      latencyRetrievalMs: retrieval.retrievalMs,
+      chunksRetrieved: retrieved.length,
+      topScore,
+      latencyTotalMs: Date.now() - pipelineStart,
+    });
     throw new HTTPException(422, {
       message:
         "No relevant content found for this question in the collection's documents. Try rephrasing, or check that the relevant document finished ingesting.",
@@ -111,10 +197,11 @@ query.post("/:id/query", async (c) => {
   }
 
   // --- Generate ------------------------------------------------------------
-  const llm = new WorkersAiLlmProvider(c.env.AI);
+  const userPrompt = buildUserPrompt(context.contextText, question);
+  const promptText = `${RAG_SYSTEM_PROMPT}\n\n${userPrompt}`;
   const messages: LlmMessage[] = [
     { role: "system", content: RAG_SYSTEM_PROMPT },
-    { role: "user", content: buildUserPrompt(context.contextText, question) },
+    { role: "user", content: userPrompt },
   ];
 
   const buildUsage = (invalidMarkers: number[]): QueryUsage => ({
@@ -126,11 +213,39 @@ query.post("/:id/query", async (c) => {
   });
 
   if (!wantStream) {
-    const completion = await llm.complete({ messages });
+    const genStart = Date.now();
+    let completion;
+    try {
+      completion = await llm.complete({ messages });
+    } catch (err) {
+      recordUsage({
+        status: "error",
+        errorCode: "generation_failed",
+        latencyEmbedMs: retrieval.embedMs,
+        latencyRetrievalMs: retrieval.retrievalMs,
+        latencyGenerationMs: Date.now() - genStart,
+        chunksRetrieved: retrieved.length,
+        topScore,
+        latencyTotalMs: Date.now() - pipelineStart,
+      });
+      throw err;
+    }
+    const generationMs = Date.now() - genStart;
     const { sources, invalidMarkers } = resolveCitations(
       completion.text,
       context.sources,
     );
+    recordUsage({
+      status: "success",
+      latencyEmbedMs: retrieval.embedMs,
+      latencyRetrievalMs: retrieval.retrievalMs,
+      latencyGenerationMs: generationMs,
+      chunksRetrieved: retrieved.length,
+      topScore,
+      latencyTotalMs: Date.now() - pipelineStart,
+      promptText,
+      answerText: completion.text,
+    });
     const response: QueryResponse = {
       answer: completion.text,
       sources,
@@ -143,21 +258,44 @@ query.post("/:id/query", async (c) => {
     const send = (event: QueryStreamEvent) =>
       stream.writeSSE({ data: JSON.stringify(event) });
 
+    const genStart = Date.now();
     let answer = "";
     try {
       for await (const delta of llm.stream({ messages })) {
         answer += delta;
         await send({ type: "delta", text: delta });
       }
+      const generationMs = Date.now() - genStart;
       const { sources, invalidMarkers } = resolveCitations(answer, context.sources);
       await send({ type: "sources", sources, usage: buildUsage(invalidMarkers) });
       await send({ type: "done" });
+      recordUsage({
+        status: "success",
+        latencyEmbedMs: retrieval.embedMs,
+        latencyRetrievalMs: retrieval.retrievalMs,
+        latencyGenerationMs: generationMs,
+        chunksRetrieved: retrieved.length,
+        topScore,
+        latencyTotalMs: Date.now() - pipelineStart,
+        promptText,
+        answerText: answer,
+      });
     } catch (err) {
       // Headers are already sent (200), so failures must travel in-band.
       console.error("Query generation failed:", err);
       await send({
         type: "error",
         message: "Answer generation failed — please try again.",
+      });
+      recordUsage({
+        status: "error",
+        errorCode: "generation_failed",
+        latencyEmbedMs: retrieval.embedMs,
+        latencyRetrievalMs: retrieval.retrievalMs,
+        latencyGenerationMs: Date.now() - genStart,
+        chunksRetrieved: retrieved.length,
+        topScore,
+        latencyTotalMs: Date.now() - pipelineStart,
       });
     }
   });

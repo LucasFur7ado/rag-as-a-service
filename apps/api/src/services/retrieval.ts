@@ -30,6 +30,15 @@ export interface RetrieveOptions {
   topK: number;
 }
 
+/** Retrieved chunks plus per-stage wall-clock timings (for analytics). */
+export interface RetrievalResult {
+  chunks: RetrievedChunk[];
+  /** Time spent embedding the query (ms). */
+  embedMs: number;
+  /** Time spent in the vector-store similarity search (ms). */
+  retrievalMs: number;
+}
+
 /**
  * Embed the query and fetch the top-k nearest chunks.
  *
@@ -58,16 +67,22 @@ export async function retrieveChunks(
   embedder: EmbeddingProvider,
   store: VectorStore,
   { tenantId, collectionId, query, topK }: RetrieveOptions,
-): Promise<RetrievedChunk[]> {
+): Promise<RetrievalResult> {
+  // Time the two stages separately so analytics can attribute latency
+  // (embedding vs. vector search) — behaviour is otherwise unchanged.
+  const embedStart = Date.now();
   const { vectors } = await embedder.embed([query]);
+  const embedMs = Date.now() - embedStart;
 
+  const retrievalStart = Date.now();
   const matches = await store.query(vectorNamespace(tenantId, collectionId), {
     vector: vectors[0],
     topK,
     filter: { tenantId: { $eq: tenantId } },
   });
+  const retrievalMs = Date.now() - retrievalStart;
 
-  return matches.flatMap((match) => {
+  const chunks = matches.flatMap((match) => {
     const meta = match.metadata ?? {};
     const text = typeof meta.text === "string" ? meta.text : "";
     // A vector without its text metadata can't be cited or put in context —
@@ -87,4 +102,6 @@ export async function retrieveChunks(
       },
     ];
   });
+
+  return { chunks, embedMs, retrievalMs };
 }

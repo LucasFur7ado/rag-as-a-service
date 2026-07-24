@@ -23,6 +23,19 @@
   --color-chart-3: var(--chart-3);
   --color-chart-2: var(--chart-2);
   --color-chart-1: var(--chart-1);
+  /* Feature 5: semantic analytics colors. Defined ONCE here (light + dark
+     values live in :root / .dark) and registered as theme tokens so both
+     charts (var(--color-chart-success)) and Tailwind utilities
+     (bg-chart-success, text-chart-error, …) resolve to the same value. */
+  --color-chart-success: var(--chart-success);
+  --color-chart-error: var(--chart-error);
+  --color-chart-rate-limited: var(--chart-rate-limited);
+  --color-chart-no-results: var(--chart-no-results);
+  --color-chart-embed: var(--chart-embed);
+  --color-chart-retrieval: var(--chart-retrieval);
+  --color-chart-generation: var(--chart-generation);
+  --color-chart-tokens: var(--chart-tokens);
+  --color-chart-cost: var(--chart-cost);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -72,6 +85,19 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
+  /* Semantic analytics palette (light). Status colors are kept perceptually
+     distinct and colorblind-considerate (green/red pair backed up by shape +
+     labels in the UI, never color alone). */
+  --chart-success: oklch(0.62 0.15 152); /* green */
+  --chart-error: oklch(0.58 0.22 27); /* red (tracks --destructive) */
+  --chart-rate-limited: oklch(0.74 0.16 78); /* amber */
+  --chart-no-results: oklch(0.65 0.03 250); /* neutral slate */
+  /* Pipeline-stage ramp (embedding → retrieval → generation). */
+  --chart-embed: oklch(0.66 0.15 250); /* blue */
+  --chart-retrieval: oklch(0.62 0.16 300); /* violet */
+  --chart-generation: oklch(0.70 0.13 190); /* teal */
+  --chart-tokens: oklch(0.60 0.15 250); /* blue */
+  --chart-cost: oklch(0.70 0.16 85); /* gold */
   --radius: 0.625rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
@@ -107,6 +133,17 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
+  /* Semantic analytics palette (dark) — lifted lightness / trimmed chroma for
+     legibility on the dark surface. */
+  --chart-success: oklch(0.72 0.16 152);
+  --chart-error: oklch(0.70 0.19 22);
+  --chart-rate-limited: oklch(0.80 0.15 80);
+  --chart-no-results: oklch(0.72 0.03 250);
+  --chart-embed: oklch(0.72 0.14 250);
+  --chart-retrieval: oklch(0.70 0.15 300);
+  --chart-generation: oklch(0.76 0.12 190);
+  --chart-tokens: oklch(0.72 0.14 250);
+  --chart-cost: oklch(0.78 0.15 85);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);

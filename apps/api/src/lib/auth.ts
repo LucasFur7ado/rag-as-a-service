@@ -14,6 +14,7 @@ import {
   type ApiKeyCacheEntry,
 } from "../services/apikeys";
 import { enforceRateLimit, type RateLimitResult } from "../durable/ratelimiter";
+import { recordEvent } from "../services/analytics";
 import { LAST_USED_THROTTLE_MS, RATE_LIMIT_WINDOW_MS } from "../config";
 
 /**
@@ -237,6 +238,19 @@ export const requireAuth = createMiddleware<AppBindings>(async (c, next) => {
     RATE_LIMIT_WINDOW_MS,
   );
   if (!rl.allowed) {
+    // Record the 429 cheaply and OFF the critical path — no downstream work
+    // (no embedding/retrieval/generation) is triggered for a throttled
+    // request. Bucketed as a 'query' event: API-key traffic is overwhelmingly
+    // query traffic and the dashboard surfaces rate-limits alongside query
+    // outcomes. Collection attribution is skipped (unknown pre-dispatch).
+    recordEvent(c.env, (p) => c.executionCtx.waitUntil(p), {
+      tenantId: entry.tenantId,
+      eventType: "query",
+      authType: "apikey",
+      apiKeyId: entry.keyId,
+      status: "rate_limited",
+      errorCode: "rate_limited",
+    });
     const body: RateLimitErrorBody = {
       error: "Rate limit exceeded",
       retryAfter: rl.retryAfterSeconds,
@@ -265,8 +279,9 @@ export const requireAuth = createMiddleware<AppBindings>(async (c, next) => {
 });
 
 /**
- * Require a Clerk session specifically. Used for API-key management so a
- * programmatic key can never mint or revoke keys — presenting one here is a 401.
+ * Require a Clerk session specifically. Used for dashboard-only surfaces —
+ * API-key management (a key must never mint/revoke keys) and usage analytics
+ * (not part of the public API) — so presenting an API key here is a 401.
  */
 export const requireSession = createMiddleware<AppBindings>(async (c, next) => {
   const { token, isApiKey } = extractCredential(c.req);
@@ -275,7 +290,8 @@ export const requireSession = createMiddleware<AppBindings>(async (c, next) => {
   }
   if (isApiKey) {
     throw new HTTPException(401, {
-      message: "API keys cannot manage API keys — use a dashboard session",
+      message:
+        "API keys cannot access this endpoint — use a dashboard session",
     });
   }
 

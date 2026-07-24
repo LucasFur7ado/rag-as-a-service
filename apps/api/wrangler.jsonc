@@ -122,7 +122,29 @@
 				"RateLimiter"
 			]
 		}
-	]
+	],
+	// --- Workers Analytics Engine (Feature 5: usage events dual-write) --------
+	// Bound as USAGE_ANALYTICS. Events are written to D1 (primary, queryable for
+	// the dashboard) AND dual-written here via writeDataPoint. Analytics Engine
+	// is the correct backend at high write volume (unbounded, fire-and-forget,
+	// effectively free per write) where D1 would bottleneck — but it is
+	// write-only from a Worker (reads need the account SQL API), so the
+	// dashboard still reads D1. See src/services/analytics.ts.
+	"analytics_engine_datasets": [
+		{
+			"binding": "USAGE_ANALYTICS",
+			"dataset": "rag_usage_events"
+		}
+	],
+	// --- Cron: prune usage_events past the retention window (Feature 5) -------
+	// Runs daily at 03:00 UTC; the `scheduled` handler (src/index.ts) deletes
+	// rows older than ANALYTICS_RETENTION_DAYS (src/config.ts). Test locally:
+	//   wrangler dev --test-scheduled   then   curl "http://localhost:8787/__scheduled"
+	"triggers": {
+		"crons": [
+			"0 3 * * *"
+		]
+	}
 	// --- Secrets (set via `wrangler secret put <NAME>`, not committed) --------
 	// CLERK_ISSUER, CLERK_AUTHORIZED_PARTY, PINECONE_API_KEY
 	// For local dev, put them in apps/api/.dev.vars (git-ignored).
