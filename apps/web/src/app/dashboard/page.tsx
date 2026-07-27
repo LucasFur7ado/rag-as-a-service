@@ -1,8 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { BarChart3Icon, FolderIcon, KeyRoundIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowRightIcon, FolderIcon, KeyRoundIcon } from "lucide-react";
+import type { Collection } from "@rag/shared";
 import { RequireAuth } from "@/components/require-auth";
+import { useApi } from "@/lib/use-api";
+import { resolveRange } from "@/lib/analytics-range";
+import { useAnalyticsResource } from "@/lib/use-analytics";
+import { KpiCards } from "@/components/analytics/kpi-cards";
+import { RecentQueries } from "@/components/analytics/recent-queries";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -23,9 +30,72 @@ export default function DashboardPage() {
 }
 
 function DashboardContent() {
+  const api = useApi();
+
+  // Fixed 7-day overview window; the full analytics page owns range filtering.
+  // Resolved once at mount so the resource cache keys stay stable.
+  const range = useMemo(() => resolveRange("7d", null, null), []);
+  const { from, to } = range;
+
+  // Collections back the recent-queries "Collection" column labels.
+  const [collections, setCollections] = useState<Collection[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listCollections()
+      .then((cols) => !cancelled && setCollections(cols))
+      .catch(() => !cancelled && setCollections([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  const collectionName = useCallback(
+    (id: string | null): string => {
+      if (!id) return "—";
+      return collections?.find((c) => c.id === id)?.name ?? "(deleted)";
+    },
+    [collections],
+  );
+
+  const filters = { from, to, collectionId: undefined };
+  const summary = useAnalyticsResource(`summary|${from}|${to}`, () =>
+    api.getAnalyticsSummary(filters),
+  );
+  const timeseries = useAnalyticsResource(`timeseries|${from}|${to}`, () =>
+    api.getAnalyticsTimeseries(filters),
+  );
+
   return (
-    <div className="mx-auto max-w-5xl px-4 py-12">
+    <div className="mx-auto max-w-6xl px-4 py-12">
       <h1 className="mb-6 font-heading text-2xl font-semibold">Dashboard</h1>
+
+      {/* Analytics overview — last 7 days */}
+      <div className="mb-6">
+        <KpiCards summary={summary} timeseries={timeseries} />
+      </div>
+
+      <div className="mb-3">
+        <RecentQueries
+          api={api}
+          from={from}
+          to={to}
+          collectionName={collectionName}
+        />
+      </div>
+
+      <div className="mb-10 flex justify-end">
+        <Button
+          render={<Link href="/dashboard/analytics/" />}
+          variant="outline"
+          size="sm"
+        >
+          View all analytics
+          <ArrowRightIcon data-icon="inline-end" />
+        </Button>
+      </div>
+
+      {/* Quick links */}
       <div className="grid gap-4 sm:grid-cols-2">
         <Card>
           <CardHeader>
@@ -57,23 +127,6 @@ function DashboardContent() {
           <CardContent>
             <Button render={<Link href="/dashboard/api-keys/" />} size="sm">
               Manage API keys
-            </Button>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3Icon className="size-4 text-muted-foreground" />
-              Analytics
-            </CardTitle>
-            <CardDescription>
-              Track query volume, latency, token usage, cost, and ingestion —
-              with time-series charts and a drill-down.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button render={<Link href="/dashboard/analytics/" />} size="sm">
-              View analytics
             </Button>
           </CardContent>
         </Card>

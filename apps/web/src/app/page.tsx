@@ -1,22 +1,39 @@
-import { LandingCta } from "@/components/landing-cta";
+import type { Metadata } from "next";
+import { Hero } from "@/components/landing/hero";
+import { TechStrip } from "@/components/landing/tech-strip";
+import { Features } from "@/components/landing/features";
+import { HowItWorks } from "@/components/landing/how-it-works";
+import { CodeShowcase } from "@/components/landing/code-showcase";
+import { UseCases } from "@/components/landing/use-cases";
+import { Pricing } from "@/components/landing/pricing";
+import { Faq } from "@/components/landing/faq";
+import { CtaBand } from "@/components/landing/cta-band";
+import { SiteFooter } from "@/components/site-footer";
 
-// Statically renderable landing shell — auth-dependent CTA is a client island.
+export const metadata: Metadata = {
+  title: "RAG as a Service — grounded answers over your own documents",
+  description:
+    "Multi-tenant ingestion, vector search and grounded generation behind a simple API. Upload documents, ask questions, get answers with verifiable citations.",
+};
+
+/**
+ * Marketing landing page. Statically renderable end to end — the only client
+ * islands are the auth-dependent CTAs, the FAQ accordion and the code-sample
+ * tabs; syntax highlighting runs at build time.
+ */
 export default function Home() {
   return (
-    <div className="mx-auto flex max-w-3xl flex-col items-center gap-6 px-4 py-24 text-center">
-      <span className="rounded-full border px-3 py-1 text-xs text-muted-foreground">
-        RAG as a Service
-      </span>
-      <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
-        Ship retrieval-augmented answers over your own documents.
-      </h1>
-      <p className="max-w-xl text-lg text-muted-foreground">
-        Multi-tenant ingestion, vector search, and grounded generation behind a
-        simple API. Bring your documents; we handle the retrieval.
-      </p>
-      <div className="flex items-center gap-3">
-        <LandingCta />
-      </div>
-    </div>
+    <>
+      <Hero />
+      <TechStrip />
+      <Features />
+      <HowItWorks />
+      <CodeShowcase />
+      <UseCases />
+      <Pricing />
+      <Faq />
+      <CtaBand />
+      <SiteFooter />
+    </>
   );
 }
