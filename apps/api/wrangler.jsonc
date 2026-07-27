@@ -146,6 +146,9 @@
 		]
 	}
 	// --- Secrets (set via `wrangler secret put <NAME>`, not committed) --------
-	// CLERK_ISSUER, CLERK_AUTHORIZED_PARTY, PINECONE_API_KEY
+	// CLERK_ISSUER, CLERK_AUTHORIZED_PARTY, PINECONE_API_KEY — all REQUIRED.
+	// CLERK_AUTHORIZED_PARTY is the deployed web origin(s), comma-separated;
+	// session auth fails closed without it (it is the `azp` check that pins a
+	// token to our own frontend — `iss` only proves the Clerk instance).
 	// For local dev, put them in apps/api/.dev.vars (git-ignored).
 }

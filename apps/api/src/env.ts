@@ -31,8 +31,13 @@ export interface Env {
   // --- Secrets / vars (see apps/api/.dev.vars.example) ---------------------
   /** Clerk Frontend API URL, e.g. https://your-app.clerk.accounts.dev */
   CLERK_ISSUER: string;
-  /** Optional authorized party (azp) check. Empty to skip. */
-  CLERK_AUTHORIZED_PARTY?: string;
+  /**
+   * REQUIRED. Origin(s) of our own frontend, comma-separated — checked against
+   * the session token's `azp` claim. `iss` only proves the token came from our
+   * Clerk instance; `azp` is what pins it to our app, so auth fails closed when
+   * this is unset (see verifyClerkToken in lib/auth.ts).
+   */
+  CLERK_AUTHORIZED_PARTY: string;
   /** Pinecone API key (secret, `wrangler secret put PINECONE_API_KEY`). */
   PINECONE_API_KEY: string;
   /** Pinecone index name (var; informational — the data plane uses the host). */

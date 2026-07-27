@@ -139,7 +139,11 @@ cp apps/api/.dev.vars.example apps/api/.dev.vars # api: local dev secrets
 - **API** ([`apps/api/.dev.vars.example`](apps/api/.dev.vars.example)) — secrets
   for local `wrangler dev`; in production set them with
   `wrangler secret put <NAME>`. Required: `CLERK_ISSUER` (your Clerk Frontend
-  API URL) and `PINECONE_API_KEY` (ingestion).
+  API URL), `CLERK_AUTHORIZED_PARTY` (the web app's origin(s), comma-separated)
+  and `PINECONE_API_KEY` (ingestion). **Session auth fails closed without
+  `CLERK_AUTHORIZED_PARTY`**: `iss` only proves a token came from your Clerk
+  instance — every origin that instance authorizes shares it — so the `azp`
+  claim is what pins the token to *your* frontend, and it is not optional.
 - **API plain vars** ([`apps/api/wrangler.jsonc`](apps/api/wrangler.jsonc)
   `vars`) — `WEB_ORIGIN`: origin(s) of the web SPA allowed by CORS,
   comma-separated (default `http://localhost:3000`); `PINECONE_INDEX` /
@@ -334,7 +338,10 @@ credential types, both resolving to the same context
 identical:
 
 - **Clerk session JWT** — `Authorization: Bearer <clerk-jwt>`, used by the
-  dashboard. Verified against Clerk's JWKS.
+  dashboard. Verified against Clerk's JWKS, with the issuer pinned to
+  `CLERK_ISSUER` **and** the `azp` claim required to match
+  `CLERK_AUTHORIZED_PARTY` (a token missing `azp` is rejected, not waved
+  through).
 - **API key** — `Authorization: Bearer rag_live_…` (or `X-API-Key: rag_live_…`),
   used by programmatic callers. Verified by SHA-256 **hash lookup** (constant
   work — one indexed read; never a scan/compare over stored keys).
@@ -368,14 +375,24 @@ key auth: a key from tenant A querying tenant B's collection id gets a **404**.
 | --- | --- | --- |
 | `POST` | `/v1/api-keys` | Body `{ name, rateLimitPerMinute? }` → **201** with the **plaintext key** (only time it is ever returned) + metadata |
 | `GET` | `/v1/api-keys` | List the tenant's keys — prefix + last-4 only, never key material |
-| `DELETE` | `/v1/api-keys/:id` | Revoke (soft delete): set `revoked_at`, purge the KV cache; the key fails auth immediately |
+| `DELETE` | `/v1/api-keys/:id` | Revoke (soft delete): set `revoked_at`, purge the KV cache; the key fails auth immediately (see revocation note below) |
 
 **Key security.** Keys are `rag_live_` + 32 bytes of `crypto.getRandomValues`
 (base64url). The **plaintext is never stored** — only its SHA-256 hash (unique,
 indexed). D1 keeps a display `key_prefix` + `last4` for the UI. A KV entry keyed
 by the hash (`{ keyId, tenantId, revoked, rateLimitPerMinute }`) serves the
 read-optimized auth fast path; on a KV miss (cold cache / eventual consistency)
-auth falls back to D1, the source of truth, and repopulates KV. `last_used_at`
+auth falls back to D1, the source of truth, and repopulates KV.
+
+**Revocation.** Revoking writes `revoked_at` in D1 *and* purges the KV entry, so
+the key stops authenticating right away. Because the fast path short-circuits on
+a KV hit and never reads D1, that purge is the only thing standing between a
+revoked key and continued access — and it is best-effort (the revoke still
+returns 204 if KV errors). Every cache entry therefore carries an
+`expirationTtl` (`API_KEY_CACHE_TTL_SECONDS`, default 300s) as a backstop: in
+the worst case a failed purge delays revocation by that TTL, after which the
+entry expires, auth falls back to D1, and the key is rejected. It can never
+outlive the TTL. `last_used_at`
 is refreshed fire-and-forget via `ctx.waitUntil`, throttled to at most once per
 key per minute so it never adds latency or hammers D1.
 
@@ -599,6 +616,7 @@ cd apps/api && pnpm db:migrate:remote            # = wrangler d1 migrations appl
 # (tag: v1, new_sqlite_classes) is applied automatically by `wrangler deploy`.
 # Secrets
 pnpm dlx wrangler secret put CLERK_ISSUER
+pnpm dlx wrangler secret put CLERK_AUTHORIZED_PARTY   # deployed web origin(s)
 pnpm dlx wrangler secret put PINECONE_API_KEY
 # Vars in wrangler.jsonc: WEB_ORIGIN (deployed web origin), PINECONE_INDEX and
 # PINECONE_INDEX_HOST (see "Pinecone setup" above — dimension 1024, cosine)

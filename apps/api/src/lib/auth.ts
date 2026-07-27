@@ -15,7 +15,11 @@ import {
 } from "../services/apikeys";
 import { enforceRateLimit, type RateLimitResult } from "../durable/ratelimiter";
 import { recordEvent } from "../services/analytics";
-import { LAST_USED_THROTTLE_MS, RATE_LIMIT_WINDOW_MS } from "../config";
+import {
+  API_KEY_CACHE_TTL_SECONDS,
+  LAST_USED_THROTTLE_MS,
+  RATE_LIMIT_WINDOW_MS,
+} from "../config";
 
 /**
  * Unified authentication for the API (Feature 4).
@@ -47,6 +51,21 @@ function getJwks(issuer: string) {
   return jwks;
 }
 
+/**
+ * Thrown when the WORKER is misconfigured, as opposed to the token being bad.
+ * Both surface to the caller as an indistinguishable 401 (a client must never
+ * learn which), but only this one is logged — a deploy missing a var is an
+ * operator problem that would otherwise present as "every session is invalid"
+ * with nothing in the logs, while logging bad tokens would hand any anonymous
+ * caller a log-flooding lever.
+ */
+class AuthConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthConfigError";
+  }
+}
+
 /** Clerk session-token claims we care about. */
 interface ClerkClaims extends JWTPayload {
   /** Subject == Clerk user id. */
@@ -66,7 +85,23 @@ export async function verifyClerkToken(
   env: Env,
 ): Promise<AuthContext> {
   if (!env.CLERK_ISSUER) {
-    throw new Error("CLERK_ISSUER is not configured");
+    throw new AuthConfigError("CLERK_ISSUER is not configured");
+  }
+
+  // `iss` alone only proves the token came from our Clerk INSTANCE — every
+  // origin that instance authorizes shares it. `azp` is what pins the token to
+  // our own frontend, so it is required, not optional: an unconfigured check
+  // is an open door, and failing closed here surfaces a misconfigured deploy
+  // immediately instead of silently accepting foreign tokens.
+  const allowedParties = (env.CLERK_AUTHORIZED_PARTY ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (allowedParties.length === 0) {
+    throw new AuthConfigError(
+      "CLERK_AUTHORIZED_PARTY is not configured — set it to the web app's " +
+        "origin(s) (comma-separated). See README → Environment setup.",
+    );
   }
 
   const jwks = getJwks(env.CLERK_ISSUER);
@@ -74,11 +109,11 @@ export async function verifyClerkToken(
     issuer: env.CLERK_ISSUER,
   });
 
-  if (env.CLERK_AUTHORIZED_PARTY && payload.azp) {
-    const allowed = env.CLERK_AUTHORIZED_PARTY.split(",").map((p) => p.trim());
-    if (!allowed.includes(payload.azp)) {
-      throw new Error("Unrecognized authorized party (azp)");
-    }
+  // A MISSING azp must fail too. Guarding on `payload.azp` being present (the
+  // previous behaviour) let any token that simply omits the claim skip the
+  // check entirely — i.e. the bypass was free to anyone who could obtain one.
+  if (!payload.azp || !allowedParties.includes(payload.azp)) {
+    throw new Error("Unrecognized or missing authorized party (azp)");
   }
 
   if (!payload.sub) {
@@ -146,8 +181,11 @@ async function resolveApiKey(
     revoked: false,
     rateLimitPerMinute: row.rateLimitPerMinute,
   };
-  // Repopulate the cache for subsequent requests (best-effort).
-  await env.KV.put(cacheKey, JSON.stringify(entry));
+  // Repopulate the cache for subsequent requests (best-effort). The TTL is a
+  // revocation backstop, not just freshness — see API_KEY_CACHE_TTL_SECONDS.
+  await env.KV.put(cacheKey, JSON.stringify(entry), {
+    expirationTtl: API_KEY_CACHE_TTL_SECONDS,
+  });
   return entry;
 }
 
@@ -193,6 +231,17 @@ function invalidCredentials(): HTTPException {
   return new HTTPException(401, { message: "Invalid or expired credentials" });
 }
 
+/**
+ * Log a session-verification failure ONLY when it was our own misconfiguration
+ * (see {@link AuthConfigError}). Bad/expired tokens are the normal case and are
+ * deliberately not logged.
+ */
+function logIfMisconfigured(err: unknown): void {
+  if (err instanceof AuthConfigError) {
+    console.error("Session auth is misconfigured:", err.message);
+  }
+}
+
 // --- Rate-limit headers -----------------------------------------------------
 
 /** Attach standard RateLimit-* headers (IETF draft) to a response's headers. */
@@ -220,7 +269,8 @@ export const requireAuth = createMiddleware<AppBindings>(async (c, next) => {
     let auth: AuthContext;
     try {
       auth = await verifyClerkToken(token, c.env);
-    } catch {
+    } catch (err) {
+      logIfMisconfigured(err);
       throw invalidCredentials();
     }
     c.set("auth", auth);
@@ -298,7 +348,8 @@ export const requireSession = createMiddleware<AppBindings>(async (c, next) => {
   let auth: AuthContext;
   try {
     auth = await verifyClerkToken(token, c.env);
-  } catch {
+  } catch (err) {
+    logIfMisconfigured(err);
     throw new HTTPException(401, { message: "Invalid or expired token" });
   }
 

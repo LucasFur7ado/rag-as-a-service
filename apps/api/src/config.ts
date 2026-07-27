@@ -139,6 +139,18 @@ export const API_KEY_PREFIX = "rag_live_";
 export const API_KEY_RANDOM_BYTES = 32;
 /** Characters of the key kept (beyond the prefix) for the display prefix. */
 export const API_KEY_DISPLAY_CHARS = 4;
+/**
+ * TTL on the KV auth-cache entry for a key (seconds).
+ *
+ * Load-bearing for revocation, not just for freshness. The auth fast path
+ * short-circuits on a KV hit and never consults D1, and revoking a key purges
+ * KV on a best-effort basis (the revoke still returns 204 if the purge fails).
+ * Without a TTL a failed purge would leave the key authenticating FOREVER.
+ * With one, the worst case is bounded: a revoked key survives at most this
+ * long before the entry expires, auth falls back to D1 (the source of truth),
+ * sees `revoked_at`, and rejects. Lower = tighter revocation, more D1 reads.
+ */
+export const API_KEY_CACHE_TTL_SECONDS = 300;
 
 // --- Rate limiting (Feature 4) ----------------------------------------------
 /**

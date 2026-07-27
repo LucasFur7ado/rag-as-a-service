@@ -17,6 +17,7 @@ import {
   type ApiKeyCacheEntry,
 } from "../services/apikeys";
 import {
+  API_KEY_CACHE_TTL_SECONDS,
   DEFAULT_RATE_LIMIT_PER_MINUTE,
   MAX_RATE_LIMIT_PER_MINUTE,
 } from "../config";
@@ -95,7 +96,13 @@ apikeys.post("/", async (c) => {
     rateLimitPerMinute,
   };
   try {
-    await c.env.KV.put(apiKeyCacheKey(generated.keyHash), JSON.stringify(entry));
+    await c.env.KV.put(
+      apiKeyCacheKey(generated.keyHash),
+      JSON.stringify(entry),
+      // Bounded so a revoke whose KV purge fails can't keep the key alive
+      // indefinitely — see API_KEY_CACHE_TTL_SECONDS.
+      { expirationTtl: API_KEY_CACHE_TTL_SECONDS },
+    );
   } catch (err) {
     // Non-fatal: auth falls back to D1 on a KV miss.
     console.error("Failed to warm KV cache for new API key:", err);

@@ -1,6 +1,10 @@
 # Wrangler local dev secrets for apps/api. Copy to `.dev.vars` (git-ignored)
 # and fill in real values. These map to the secrets in the Env interface.
 CLERK_ISSUER=https://your-app-name.clerk.accounts.dev
+# REQUIRED. Origin(s) of the web app, comma-separated — matched against the
+# session token's `azp` claim. Session auth fails closed if this is unset:
+# `iss` only proves the token came from your Clerk instance, `azp` proves it
+# was issued for YOUR frontend.
 CLERK_AUTHORIZED_PARTY=http://localhost:3000
 # Pinecone: create a serverless index with dimension 1024 (bge-m3) and metric
 # `cosine`. The host is shown on the index page in the Pinecone console.
