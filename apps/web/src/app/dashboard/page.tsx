@@ -9,7 +9,8 @@ import { useApi } from "@/lib/use-api";
 import { resolveRange } from "@/lib/analytics-range";
 import { useAnalyticsResource } from "@/lib/use-analytics";
 import { KpiCards } from "@/components/analytics/kpi-cards";
-import { RecentQueries } from "@/components/analytics/recent-queries";
+import { TokensCostChart } from "@/components/analytics/tokens-cost";
+import { COMPACT_COLUMNS, RecentQueries } from "@/components/analytics/recent-queries";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -37,7 +38,7 @@ function DashboardContent() {
   const range = useMemo(() => resolveRange("7d", null, null), []);
   const { from, to } = range;
 
-  // Collections back the recent-queries "Collection" column labels.
+  // Collections label the collection field in the recent-queries detail sheet.
   const [collections, setCollections] = useState<Collection[] | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -75,12 +76,17 @@ function DashboardContent() {
         <KpiCards summary={summary} timeseries={timeseries} />
       </div>
 
-      <div className="mb-3">
+      {/* Spend over time beside the per-query drill-down that explains it.
+          `items-start` lets each card keep its natural height — the chart is
+          fixed at 240px, the table grows with its rows. */}
+      <div className="mb-3 grid items-start gap-6 md:grid-cols-2">
+        <TokensCostChart state={timeseries} />
         <RecentQueries
           api={api}
           from={from}
           to={to}
           collectionName={collectionName}
+          columns={COMPACT_COLUMNS}
         />
       </div>
 

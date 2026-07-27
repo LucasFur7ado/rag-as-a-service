@@ -201,6 +201,30 @@ export function pickGranularity(
   return to - from <= HOURLY_MAX_RANGE_MS ? "hour" : "day";
 }
 
+/**
+ * Floor a timestamp to the start of its bucket. The JS side of the bucket
+ * contract — {@link BUCKET_EXPR} is the SQL side, and the two MUST agree or
+ * the fill loop below silently looks up keys that no aggregate row carries.
+ */
+export function bucketStart(ms: number, bucketMs: number): number {
+  return Math.floor(ms / bucketMs) * bucketMs;
+}
+
+/**
+ * SQL bucket expression, pairing with `?5` (the bucket size in ms).
+ *
+ * The CAST is load-bearing. D1 binds a JavaScript number as a SQLite REAL
+ * (JS numbers are doubles), and SQLite's `/` on a REAL operand is
+ * floating-point division — so a bare `(created_at / ?5) * ?5` returns
+ * `created_at` unchanged and every event lands in its own bucket, which never
+ * matches the boundaries {@link bucketStart} generates. Forcing the divisor to
+ * INTEGER restores integer division. Note this is invisible to a SQL literal
+ * (`… / 86400000`), which SQLite parses as an INTEGER — so only a test that
+ * BINDS the divisor reproduces the failure.
+ */
+export const BUCKET_EXPR =
+  "(created_at / CAST(?5 AS INTEGER)) * CAST(?5 AS INTEGER)";
+
 interface BucketCountRow {
   bucket: number;
   success: number;
@@ -225,7 +249,7 @@ export async function getTimeseries(
   const counts = await all<BucketCountRow>(
     db,
     `SELECT
-       (created_at / ?5) * ?5 AS bucket,
+       ${BUCKET_EXPR} AS bucket,
        COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) AS success,
        COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) AS error,
        COALESCE(SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END), 0) AS rateLimited,
@@ -244,7 +268,7 @@ export async function getTimeseries(
   const p95Rows = await all<{ bucket: number; p95: number }>(
     db,
     `WITH q AS (
-       SELECT (created_at / ?5) * ?5 AS bucket, latency_total_ms AS v
+       SELECT ${BUCKET_EXPR} AS bucket, latency_total_ms AS v
        FROM usage_events
        WHERE ${QUERY_WHERE} AND latency_total_ms IS NOT NULL
      ),
@@ -265,8 +289,8 @@ export async function getTimeseries(
   // Emit a CONTINUOUS series: fill empty buckets so the chart has no gaps.
   // Merging already-aggregated buckets is not "reducing raw rows".
   const points: TimeseriesPoint[] = [];
-  const firstBucket = Math.floor(f.from / bucketMs) * bucketMs;
-  const lastBucket = Math.floor((f.to - 1) / bucketMs) * bucketMs;
+  const firstBucket = bucketStart(f.from, bucketMs);
+  const lastBucket = bucketStart(f.to - 1, bucketMs);
   for (let b = firstBucket; b <= lastBucket; b += bucketMs) {
     const row = countsByBucket.get(b);
     points.push({

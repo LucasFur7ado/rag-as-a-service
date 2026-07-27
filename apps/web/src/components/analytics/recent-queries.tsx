@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -43,6 +43,11 @@ import { EventDetailSheet } from "./event-detail-sheet";
  * (client-side over loaded rows), server-side cursor pagination, a status
  * filter, and a full-detail sheet on row activation. Rows are keyboard
  * focusable and open on Enter/Space.
+ *
+ * Which columns render is caller-controlled via `columns` (default: all of
+ * them). Narrow placements — the dashboard overview sits at half width — pass
+ * a subset; nothing is lost, since every field is in the detail sheet a click
+ * away on any row.
  */
 
 type SortKey =
@@ -52,6 +57,38 @@ type SortKey =
   | "topScore"
   | "tokens";
 type SortDir = "asc" | "desc";
+
+/** Every available column, in display order. */
+export const ALL_COLUMNS = [
+  "time",
+  "collection",
+  "status",
+  "latency",
+  "chunks",
+  "topScore",
+  "tokens",
+  "auth",
+] as const;
+
+export type RecentQueriesColumn = (typeof ALL_COLUMNS)[number];
+
+/** The four worth scanning when the table is squeezed into half a row. */
+export const COMPACT_COLUMNS: readonly RecentQueriesColumn[] = [
+  "time",
+  "status",
+  "latency",
+  "tokens",
+];
+
+interface ColumnDef {
+  label: string;
+  /** Right-aligns and tabular-numbers both the header and the cell. */
+  numeric?: boolean;
+  /** Present when the column is sortable. */
+  sortKey?: SortKey;
+  cellClassName?: string;
+  cell: (e: UsageEvent) => ReactNode;
+}
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "all", label: "All statuses" },
@@ -71,12 +108,15 @@ export function RecentQueries({
   to,
   collectionId,
   collectionName,
+  columns = ALL_COLUMNS,
 }: {
   api: ApiClient;
   from: number;
   to: number;
   collectionId?: string;
   collectionName: (id: string | null) => string;
+  /** Columns to render, in `ALL_COLUMNS` order. Defaults to all of them. */
+  columns?: readonly RecentQueriesColumn[];
 }) {
   const [status, setStatus] = useState<string>("all");
   const [events, setEvents] = useState<UsageEvent[]>([]);
@@ -167,6 +207,62 @@ export function RecentQueries({
         : { key, dir: "desc" },
     );
 
+  // Each header and its cell are defined together, so trimming `columns` can
+  // never leave the two out of step.
+  const columnDefs = useMemo<Record<RecentQueriesColumn, ColumnDef>>(
+    () => ({
+      time: {
+        label: "Time",
+        sortKey: "createdAt",
+        cellClassName: "whitespace-nowrap text-xs text-muted-foreground",
+        cell: (e) => formatTimestamp(e.createdAt),
+      },
+      collection: {
+        label: "Collection",
+        cellClassName: "max-w-[10rem] truncate text-xs",
+        cell: (e) =>
+          e.eventType === "ingestion"
+            ? "— (ingestion)"
+            : collectionName(e.collectionId),
+      },
+      status: {
+        label: "Status",
+        cell: (e) => <StatusBadge status={e.status} />,
+      },
+      latency: {
+        label: "Latency",
+        numeric: true,
+        sortKey: "latencyTotalMs",
+        cell: (e) => formatLatency(e.latencyTotalMs),
+      },
+      chunks: {
+        label: "Chunks",
+        numeric: true,
+        sortKey: "chunksRetrieved",
+        cell: (e) => e.chunksRetrieved ?? "—",
+      },
+      topScore: {
+        label: "Top score",
+        numeric: true,
+        sortKey: "topScore",
+        cell: (e) =>
+          e.topScore != null ? `${(e.topScore * 100).toFixed(0)}%` : "—",
+      },
+      tokens: {
+        label: "Tokens",
+        numeric: true,
+        sortKey: "tokens",
+        cell: (e) => (tokensOf(e) > 0 ? formatCount(tokensOf(e)) : "—"),
+      },
+      auth: {
+        label: "Auth",
+        cellClassName: "text-xs",
+        cell: (e) => (e.authType === "apikey" ? "API key" : "Dashboard"),
+      },
+    }),
+    [collectionName],
+  );
+
   return (
     <Card>
       <CardHeader>
@@ -213,43 +309,27 @@ export function RecentQueries({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <SortHeader
-                      label="Time"
-                      active={sort.key === "createdAt"}
-                      dir={sort.dir}
-                      onClick={() => toggleSort("createdAt")}
-                    />
-                    <TableHead>Collection</TableHead>
-                    <TableHead>Status</TableHead>
-                    <SortHeader
-                      label="Latency"
-                      active={sort.key === "latencyTotalMs"}
-                      dir={sort.dir}
-                      onClick={() => toggleSort("latencyTotalMs")}
-                      numeric
-                    />
-                    <SortHeader
-                      label="Chunks"
-                      active={sort.key === "chunksRetrieved"}
-                      dir={sort.dir}
-                      onClick={() => toggleSort("chunksRetrieved")}
-                      numeric
-                    />
-                    <SortHeader
-                      label="Top score"
-                      active={sort.key === "topScore"}
-                      dir={sort.dir}
-                      onClick={() => toggleSort("topScore")}
-                      numeric
-                    />
-                    <SortHeader
-                      label="Tokens"
-                      active={sort.key === "tokens"}
-                      dir={sort.dir}
-                      onClick={() => toggleSort("tokens")}
-                      numeric
-                    />
-                    <TableHead>Auth</TableHead>
+                    {columns.map((id) => {
+                      const col = columnDefs[id];
+                      const { sortKey } = col;
+                      return sortKey ? (
+                        <SortHeader
+                          key={id}
+                          label={col.label}
+                          active={sort.key === sortKey}
+                          dir={sort.dir}
+                          onClick={() => toggleSort(sortKey)}
+                          numeric={col.numeric}
+                        />
+                      ) : (
+                        <TableHead
+                          key={id}
+                          className={col.numeric ? "text-right" : undefined}
+                        >
+                          {col.label}
+                        </TableHead>
+                      );
+                    })}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -268,32 +348,20 @@ export function RecentQueries({
                       }}
                       className="cursor-pointer outline-none focus-visible:bg-accent/60"
                     >
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                        {formatTimestamp(e.createdAt)}
-                      </TableCell>
-                      <TableCell className="max-w-[10rem] truncate text-xs">
-                        {e.eventType === "ingestion"
-                          ? "— (ingestion)"
-                          : collectionName(e.collectionId)}
-                      </TableCell>
-                      <TableCell>
-                        <StatusBadge status={e.status} />
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">
-                        {formatLatency(e.latencyTotalMs)}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">
-                        {e.chunksRetrieved ?? "—"}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">
-                        {e.topScore != null ? `${(e.topScore * 100).toFixed(0)}%` : "—"}
-                      </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">
-                        {tokensOf(e) > 0 ? formatCount(tokensOf(e)) : "—"}
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        {e.authType === "apikey" ? "API key" : "Dashboard"}
-                      </TableCell>
+                      {columns.map((id) => {
+                        const col = columnDefs[id];
+                        return (
+                          <TableCell
+                            key={id}
+                            className={cn(
+                              col.numeric && "text-right text-xs tabular-nums",
+                              col.cellClassName,
+                            )}
+                          >
+                            {col.cell(e)}
+                          </TableCell>
+                        );
+                      })}
                     </TableRow>
                   ))}
                 </TableBody>
