@@ -8,17 +8,20 @@ import { Button } from "@/components/ui/button";
 export function LandingCta() {
   const { isSignedIn } = useAuth();
 
-  if (isSignedIn) {
-    return (
-      <Button size="lg" render={<Link href="/dashboard" />}>
-        Go to dashboard
-      </Button>
-    );
-  }
-
   return (
-    <SignInButton mode="modal">
-      <Button size="lg">Get started</Button>
-    </SignInButton>
+    <>
+      {isSignedIn ? (
+        <Button size="lg" render={<Link href="/dashboard" />}>
+          Go to dashboard
+        </Button>
+      ) : (
+        <SignInButton mode="modal">
+          <Button size="lg">Get started</Button>
+        </SignInButton>
+      )}
+      <Button size="lg" variant="outline" render={<Link href="/docs" />}>
+        View docs
+      </Button>
+    </>
   );
 }

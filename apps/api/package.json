@@ -8,6 +8,7 @@
     "deploy": "wrangler deploy",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
+    "gen:openapi": "tsx scripts/gen-openapi.ts",
     "test": "vitest run",
     "lint": "echo \"(no lint configured for api)\"",
     "cf-typegen": "wrangler types",
@@ -16,16 +17,21 @@
     "db:migrate:remote": "wrangler d1 migrations apply rag-db --remote"
   },
   "dependencies": {
+    "@hono/zod-openapi": "^1.5",
     "@rag/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.31",
     "jose": "^6.2.3",
     "js-tiktoken": "^1.0.21",
-    "unpdf": "^1.6.2"
+    "unpdf": "^1.6.2",
+    "yaml": "^2.9.0",
+    "zod": "^4"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260721.1",
+    "@readme/openapi-parser": "^6.3.0",
     "drizzle-kit": "^0.31.10",
+    "tsx": "^4.23.1",
     "typescript": "^5.9.2",
     "vitest": "^4.1.10",
     "wrangler": "^4.112.0"

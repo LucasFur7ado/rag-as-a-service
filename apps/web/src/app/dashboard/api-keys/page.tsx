@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -465,6 +466,17 @@ function UseTheApiSnippet({
             {copied ? <CheckIcon /> : <CopyIcon />}
           </Button>
         </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          See the{" "}
+          <Link href="/docs/reference" className="text-primary underline underline-offset-2">
+            query endpoint reference
+          </Link>{" "}
+          for parameters, response shapes, and a live “Try it” console — or the{" "}
+          <Link href="/docs/authentication" className="text-primary underline underline-offset-2">
+            authentication guide
+          </Link>
+          .
+        </p>
       </CardContent>
     </Card>
   );

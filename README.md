@@ -505,6 +505,33 @@ Config knobs in [`config.ts`](apps/api/src/config.ts): `ANALYTICS_RETENTION_DAYS
 `DEFAULT_MODEL_COST` (per-model per-token rates for cost estimation — a rough
 *relative* signal, not a billing figure).
 
+## API documentation (Feature 6)
+
+The API is self-documenting. Zod schemas in [`packages/shared`](packages/shared/src/schemas)
+are the single source of truth: the TypeScript types both apps use are inferred
+from them, and the **OpenAPI 3.1** spec is generated from the same schemas — so
+the docs, the types, and the validated contract cannot drift.
+
+- **Machine-readable spec**: `GET /v1/openapi.json` (and `/v1/openapi.yaml`) —
+  public, cached, valid OpenAPI 3.1. Import it into Postman/Insomnia/Swagger
+  Editor, or regenerate/validate locally with `pnpm --filter api gen:openapi`
+  (writes [`apps/web/src/generated/openapi.json`](apps/web/src/generated/openapi.json)
+  and fails on an invalid spec). Every operation is tagged, marks which auth
+  scheme(s) it accepts (`ApiKeyAuth` / `SessionAuth`), and documents all its
+  responses — including `429` with the `RateLimit-*` and `Retry-After` headers.
+- **Hosted docs**: the web app serves a public docs section at
+  [`/docs`](apps/web/src/app/docs) — overview + quickstart, authentication, rate
+  limits, errors, an ingestion guide, and a full **`/docs/reference`** rendered
+  from the spec (per-endpoint schemas, curl/TypeScript/Python samples, and an
+  authenticated "Try it" console). It builds to static HTML with the rest of the
+  site and is readable signed out.
+
+The spec is documented via a dedicated registration layer
+([`apps/api/src/openapi`](apps/api/src/openapi)) rather than by swapping the
+runtime routers to `@hono/zod-openapi`'s validating router — that keeps every
+endpoint's request handling (and error bodies) byte-for-byte unchanged while
+still generating the spec from the shared schemas.
+
 ## Run in dev
 
 First, apply the D1 migrations to the local (miniflare) database — `wrangler

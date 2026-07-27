@@ -6,6 +6,53 @@
  * duplicating. Query constants take effect immediately).
  */
 
+import { VERSION } from "./version";
+
+// --- OpenAPI / developer docs (Feature 6) -----------------------------------
+/**
+ * Public repository link, surfaced in the OpenAPI `info.contact`. Not a runtime
+ * URL — purely documentation metadata. Override per fork.
+ */
+export const REPO_URL = "https://github.com/your-org/rag-as-a-service";
+
+/**
+ * Static Info block for the generated OpenAPI document. `version` tracks the
+ * API version in {@link VERSION} (src/version.ts) — the single spec-version
+ * source (bump it on releases and the spec + docs follow automatically).
+ */
+export const OPENAPI_INFO = {
+  title: "RAG as a Service API",
+  version: VERSION,
+  description:
+    "Multi-tenant retrieval-augmented generation platform. Upload documents into " +
+    "collections, then ask grounded questions and get answers with citations. " +
+    "Authenticate with an API key (`Authorization: Bearer rag_live_…`) for " +
+    "programmatic access, or a Clerk session for dashboard-only endpoints.",
+  contact: { name: "RAG as a Service", url: REPO_URL },
+} as const;
+
+/** Local dev server, always advertised in the spec's `servers` list. */
+export const LOCAL_API_URL = "http://localhost:8787";
+
+/**
+ * Build the OpenAPI `servers` list. The public/production base URL is read from
+ * the `PUBLIC_API_URL` var (wrangler.jsonc / env) so nothing is hardcoded; the
+ * request origin is used as a last-resort fallback, and local dev is always
+ * listed for the "Try it" console.
+ */
+export function openApiServers(
+  publicApiUrl: string | undefined,
+  requestOrigin?: string,
+): Array<{ url: string; description: string }> {
+  const servers: Array<{ url: string; description: string }> = [];
+  const production = publicApiUrl?.trim() || requestOrigin?.trim();
+  if (production && production !== LOCAL_API_URL) {
+    servers.push({ url: production.replace(/\/$/, ""), description: "Production" });
+  }
+  servers.push({ url: LOCAL_API_URL, description: "Local development" });
+  return servers;
+}
+
 // --- Chunking ---------------------------------------------------------------
 /** Target chunk size in characters (~200-250 tokens). */
 export const CHUNK_SIZE_CHARS = 900;

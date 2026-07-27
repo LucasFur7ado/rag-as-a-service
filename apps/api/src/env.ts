@@ -44,6 +44,12 @@ export interface Env {
   PINECONE_INDEX_HOST: string;
   /** Origin(s) of the web SPA allowed by CORS, comma-separated. */
   WEB_ORIGIN: string;
+  /**
+   * Public/production base URL of this API, advertised as the primary server in
+   * the generated OpenAPI spec (Feature 6). Optional — when absent the spec
+   * falls back to the request origin plus local dev. No trailing slash.
+   */
+  PUBLIC_API_URL?: string;
 
   // --- Bindings (declared in wrangler.jsonc) -----------------------------
   /** Workers AI. */

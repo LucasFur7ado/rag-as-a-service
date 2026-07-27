@@ -15,6 +15,9 @@ export function SiteHeader() {
           RAG<span className="text-muted-foreground">aaS</span>
         </Link>
         <nav className="flex items-center gap-3">
+          <Button render={<Link href="/docs" />} variant="ghost" size="sm">
+            Docs
+          </Button>
           {isSignedIn ? (
             <>
               <Button render={<Link href="/dashboard" />} variant="ghost" size="sm">

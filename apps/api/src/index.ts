@@ -1,6 +1,7 @@
-import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
+import { stringify as yamlStringify } from "yaml";
 import type { AppBindings, Env, IngestMessage } from "./env";
 import { health } from "./routes/health";
 import { me } from "./routes/me";
@@ -10,8 +11,18 @@ import { query } from "./routes/query";
 import { apikeys } from "./routes/apikeys";
 import { analytics } from "./routes/analytics";
 import { pruneUsageEvents } from "./services/analytics-retention";
+import { registerOpenApi } from "./openapi/register";
+import { buildOpenApiDocument } from "./openapi/document";
+import { openApiServers } from "./config";
 
-const app = new Hono<AppBindings>();
+// OpenAPIHono is a drop-in superset of Hono: the runtime routers below are
+// unchanged. It adds an OpenAPI registry (populated by registerOpenApi) from
+// which the spec is generated — see src/openapi/*.
+const app = new OpenAPIHono<AppBindings>();
+
+// Register the OpenAPI documentation for every operation (doc-only; does not
+// alter request handling — see src/openapi/register.ts).
+registerOpenApi(app);
 
 // CORS so the Next.js web app (a different origin) can call this worker with
 // a Bearer token. Allowed origins come from the WEB_ORIGIN var (comma-separated
@@ -45,6 +56,27 @@ app.route("/v1/api-keys", apikeys);
 
 // Feature 5: usage analytics dashboard API (session-only, tenant-scoped).
 app.route("/v1/analytics", analytics);
+
+// --- Feature 6: OpenAPI spec (public, no auth, cached) --------------------
+// Generated from the Zod schemas in packages/shared via the registry populated
+// by registerOpenApi(). Servers come from PUBLIC_API_URL / the request origin
+// (no hardcoded URLs). Cached for 5 minutes — the spec only changes on deploy.
+const SPEC_CACHE_CONTROL = "public, max-age=300";
+
+function specFor(c: { env: Env; req: { url: string } }) {
+  const origin = new URL(c.req.url).origin;
+  return buildOpenApiDocument(app, openApiServers(c.env.PUBLIC_API_URL, origin));
+}
+
+app.get("/v1/openapi.json", (c) =>
+  c.json(specFor(c), 200, { "Cache-Control": SPEC_CACHE_CONTROL }),
+);
+app.get("/v1/openapi.yaml", (c) =>
+  c.body(yamlStringify(specFor(c)), 200, {
+    "Content-Type": "application/yaml; charset=utf-8",
+    "Cache-Control": SPEC_CACHE_CONTROL,
+  }),
+);
 
 // --- Error handling -------------------------------------------------------
 app.onError((err, c) => {

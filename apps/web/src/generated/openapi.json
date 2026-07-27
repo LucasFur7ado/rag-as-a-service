@@ -1,0 +1,3265 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "RAG as a Service API",
+    "version": "0.1.0",
+    "description": "Multi-tenant retrieval-augmented generation platform. Upload documents into collections, then ask grounded questions and get answers with citations. Authenticate with an API key (`Authorization: Bearer rag_live_…`) for programmatic access, or a Clerk session for dashboard-only endpoints.",
+    "contact": {
+      "name": "RAG as a Service",
+      "url": "https://github.com/your-org/rag-as-a-service"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8787",
+      "description": "Local development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Collections",
+      "description": "Create and manage collections — the knowledge bases documents are grouped into."
+    },
+    {
+      "name": "Documents",
+      "description": "Upload, inspect, re-ingest, download, and delete source documents."
+    },
+    {
+      "name": "Query",
+      "description": "Ask grounded questions and receive answers with citations (streamed or JSON)."
+    },
+    {
+      "name": "API Keys",
+      "description": "Mint and revoke programmatic API keys (dashboard session only)."
+    },
+    {
+      "name": "Analytics",
+      "description": "Usage analytics for the dashboard (session only)."
+    },
+    {
+      "name": "Health",
+      "description": "Liveness and current-principal probes."
+    },
+    {
+      "name": "Meta",
+      "description": "The OpenAPI specification itself."
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "rag_live_...",
+        "description": "Programmatic API key. Send `Authorization: Bearer rag_live_…` (or the `X-API-Key` header). Rate-limited per key; responses carry RateLimit-* headers."
+      },
+      "SessionAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Clerk session JWT from the dashboard SPA. Required for API-key management and analytics endpoints, which never accept an API key."
+      }
+    },
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "version": {
+            "type": "string",
+            "example": "0.1.0"
+          },
+          "service": {
+            "type": "string",
+            "example": "rag-api"
+          }
+        },
+        "required": [
+          "status",
+          "version",
+          "service"
+        ]
+      },
+      "AuthContext": {
+        "type": "object",
+        "properties": {
+          "tenantId": {
+            "type": "string",
+            "example": "org_2abc123"
+          },
+          "authType": {
+            "$ref": "#/components/schemas/AuthType"
+          },
+          "userId": {
+            "type": "string",
+            "description": "Clerk user id — present only for `session` auth."
+          },
+          "keyId": {
+            "type": "string",
+            "description": "Id of the API key used — present only for `apikey` auth."
+          }
+        },
+        "required": [
+          "tenantId",
+          "authType"
+        ]
+      },
+      "AuthType": {
+        "type": "string",
+        "enum": [
+          "session",
+          "apikey"
+        ],
+        "example": "apikey"
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "Collection not found"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "description": "Standard error response body used across the API."
+      },
+      "RateLimitErrorBody": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "Rate limit exceeded"
+          },
+          "retryAfter": {
+            "type": "integer",
+            "example": 30,
+            "description": "Seconds until the caller may retry (mirrors Retry-After)."
+          },
+          "limit": {
+            "type": "integer",
+            "example": 60,
+            "description": "The limit that was exceeded (requests per minute)."
+          }
+        },
+        "required": [
+          "error",
+          "retryAfter",
+          "limit"
+        ]
+      },
+      "CollectionResponse": {
+        "type": "object",
+        "properties": {
+          "collection": {
+            "$ref": "#/components/schemas/Collection"
+          }
+        },
+        "required": [
+          "collection"
+        ]
+      },
+      "Collection": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "col_9f8b2a1c"
+          },
+          "tenantId": {
+            "type": "string",
+            "example": "org_2abc123"
+          },
+          "name": {
+            "type": "string",
+            "example": "Product docs"
+          },
+          "description": {
+            "type": "string",
+            "example": "Public product documentation and FAQs."
+          },
+          "createdAt": {
+            "type": "integer",
+            "example": 1753800000000
+          },
+          "updatedAt": {
+            "type": "integer",
+            "example": 1753800000000
+          }
+        },
+        "required": [
+          "id",
+          "tenantId",
+          "name",
+          "createdAt",
+          "updatedAt"
+        ],
+        "description": "A named group of documents indexed and queried together."
+      },
+      "CreateCollectionRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "example": "Product docs"
+          },
+          "description": {
+            "type": "string",
+            "example": "Public product documentation and FAQs."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "ListCollectionsResponse": {
+        "type": "object",
+        "properties": {
+          "collections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Collection"
+            }
+          }
+        },
+        "required": [
+          "collections"
+        ]
+      },
+      "UploadDocumentResponse": {
+        "type": "object",
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/Document"
+          }
+        },
+        "required": [
+          "document"
+        ]
+      },
+      "Document": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "doc_4c1e77a0"
+          },
+          "tenantId": {
+            "type": "string",
+            "example": "org_2abc123"
+          },
+          "collectionId": {
+            "type": "string",
+            "example": "col_9f8b2a1c"
+          },
+          "filename": {
+            "type": "string",
+            "example": "handbook.pdf"
+          },
+          "contentType": {
+            "type": "string",
+            "example": "application/pdf"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "example": 248913
+          },
+          "status": {
+            "$ref": "#/components/schemas/DocumentStatus"
+          },
+          "error": {
+            "type": "string",
+            "description": "Populated when `status === \"error\"`."
+          },
+          "chunkCount": {
+            "type": "integer",
+            "example": 42,
+            "description": "Number of chunks indexed; populated when `status === \"ready\"`."
+          },
+          "ingestedAt": {
+            "type": "integer",
+            "example": 1753800000000,
+            "description": "When ingestion last completed successfully."
+          },
+          "createdAt": {
+            "type": "integer",
+            "example": 1753800000000
+          },
+          "updatedAt": {
+            "type": "integer",
+            "example": 1753800000000
+          }
+        },
+        "required": [
+          "id",
+          "tenantId",
+          "collectionId",
+          "filename",
+          "contentType",
+          "sizeBytes",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "description": "Metadata for an uploaded source document."
+      },
+      "DocumentStatus": {
+        "type": "string",
+        "enum": [
+          "uploaded",
+          "processing",
+          "ready",
+          "error"
+        ],
+        "example": "ready"
+      },
+      "UploadDocumentBody": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "The source file (PDF, plain text, or Markdown)."
+          }
+        },
+        "required": [
+          "file"
+        ]
+      },
+      "ListDocumentsResponse": {
+        "type": "object",
+        "properties": {
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Document"
+            }
+          }
+        },
+        "required": [
+          "documents"
+        ]
+      },
+      "DocumentResponse": {
+        "type": "object",
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/Document"
+          }
+        },
+        "required": [
+          "document"
+        ]
+      },
+      "DocumentStatusResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/DocumentStatus"
+          },
+          "chunkCount": {
+            "type": "integer",
+            "example": 42,
+            "description": "Populated when `status === \"ready\"`."
+          },
+          "error": {
+            "type": "string",
+            "description": "Populated when `status === \"error\"`."
+          },
+          "updatedAt": {
+            "type": "integer",
+            "example": 1753800000000
+          }
+        },
+        "required": [
+          "status",
+          "updatedAt"
+        ]
+      },
+      "ReingestDocumentResponse": {
+        "type": "object",
+        "properties": {
+          "document": {
+            "$ref": "#/components/schemas/Document"
+          }
+        },
+        "required": [
+          "document"
+        ]
+      },
+      "QueryResponse": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "string",
+            "example": "Annual plans can be refunded in full within 30 days of purchase [1]. After 30 days, refunds are prorated [2].",
+            "description": "Generated answer (markdown, with inline `[n]` citation markers)."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            }
+          },
+          "usage": {
+            "$ref": "#/components/schemas/QueryUsage"
+          }
+        },
+        "required": [
+          "answer",
+          "sources",
+          "usage"
+        ]
+      },
+      "Citation": {
+        "type": "object",
+        "properties": {
+          "marker": {
+            "type": "integer",
+            "example": 1,
+            "description": "1-based `[n]` label used in the answer."
+          },
+          "documentId": {
+            "type": "string",
+            "example": "doc_4c1e77a0"
+          },
+          "filename": {
+            "type": "string",
+            "example": "handbook.pdf"
+          },
+          "page": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "example": 12,
+            "description": "1-based page number for paged sources (PDF); null otherwise."
+          },
+          "chunkIndex": {
+            "type": "integer",
+            "example": 5
+          },
+          "snippet": {
+            "type": "string",
+            "example": "Annual plans are eligible for a full refund within 30 days of purchase…"
+          },
+          "score": {
+            "type": "number",
+            "example": 0.82,
+            "description": "Similarity score in [0, 1] from the vector store."
+          },
+          "cited": {
+            "type": "boolean",
+            "example": true,
+            "description": "Whether the model actually cited this source."
+          }
+        },
+        "required": [
+          "marker",
+          "documentId",
+          "filename",
+          "page",
+          "chunkIndex",
+          "snippet",
+          "score",
+          "cited"
+        ]
+      },
+      "QueryUsage": {
+        "type": "object",
+        "properties": {
+          "chunksRetrieved": {
+            "type": "integer",
+            "example": 8
+          },
+          "chunksUsed": {
+            "type": "integer",
+            "example": 5
+          },
+          "contextTokens": {
+            "type": "integer",
+            "example": 1240
+          },
+          "invalidMarkers": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "example": [],
+            "description": "Markers the model emitted that map to no retrieved chunk."
+          },
+          "model": {
+            "type": "string",
+            "example": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+          }
+        },
+        "required": [
+          "chunksRetrieved",
+          "chunksUsed",
+          "contextTokens",
+          "invalidMarkers",
+          "model"
+        ]
+      },
+      "QueryRequest": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "example": "What is the refund policy for annual plans?"
+          },
+          "topK": {
+            "type": "integer",
+            "example": 8,
+            "description": "Max source chunks to retrieve (server clamps to a sane range)."
+          },
+          "stream": {
+            "type": "boolean",
+            "example": false,
+            "description": "`true`/omitted → Server-Sent Events stream of query events; `false` → a single JSON QueryResponse."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "ApiKeyCreateResponse": {
+        "type": "object",
+        "properties": {
+          "apiKey": {
+            "$ref": "#/components/schemas/ApiKey"
+          },
+          "key": {
+            "type": "string",
+            "example": "rag_live_a1b2c3d4e5f6g7h8i9j0",
+            "description": "Full plaintext key. Never returned again."
+          }
+        },
+        "required": [
+          "apiKey",
+          "key"
+        ]
+      },
+      "ApiKey": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "key_1a2b3c4d"
+          },
+          "name": {
+            "type": "string",
+            "example": "Production server"
+          },
+          "keyPrefix": {
+            "type": "string",
+            "example": "rag_live_a1b2",
+            "description": "Leading display portion; not usable to authenticate."
+          },
+          "last4": {
+            "type": "string",
+            "example": "9f3c"
+          },
+          "rateLimitPerMinute": {
+            "type": "integer",
+            "example": 60
+          },
+          "createdAt": {
+            "type": "integer",
+            "example": 1753800000000
+          },
+          "lastUsedAt": {
+            "type": "integer",
+            "example": 1753800000000,
+            "description": "Last successful auth with this key; null/absent if never used."
+          },
+          "revokedAt": {
+            "type": "integer",
+            "example": 1753800000000,
+            "description": "When the key was revoked; null/absent while active."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "keyPrefix",
+          "last4",
+          "rateLimitPerMinute",
+          "createdAt"
+        ],
+        "description": "An API key (never includes key material)."
+      },
+      "CreateApiKeyRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "example": "Production server"
+          },
+          "rateLimitPerMinute": {
+            "type": "integer",
+            "example": 120,
+            "description": "Optional per-key override; defaults to the server's configured limit."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "ListApiKeysResponse": {
+        "type": "object",
+        "properties": {
+          "apiKeys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiKey"
+            }
+          }
+        },
+        "required": [
+          "apiKeys"
+        ]
+      },
+      "AnalyticsSummary": {
+        "type": "object",
+        "properties": {
+          "range": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "integer",
+                "example": 1753200000000
+              },
+              "to": {
+                "type": "integer",
+                "example": 1753800000000
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ]
+          },
+          "totalQueries": {
+            "$ref": "#/components/schemas/MetricWithDelta"
+          },
+          "successRate": {
+            "$ref": "#/components/schemas/MetricWithDelta"
+          },
+          "p50LatencyMs": {
+            "$ref": "#/components/schemas/MetricWithDelta"
+          },
+          "p95LatencyMs": {
+            "$ref": "#/components/schemas/MetricWithDelta"
+          },
+          "totalTokens": {
+            "$ref": "#/components/schemas/MetricWithDelta"
+          },
+          "estimatedCost": {
+            "$ref": "#/components/schemas/MetricWithDelta"
+          },
+          "activeCollections": {
+            "$ref": "#/components/schemas/MetricWithDelta"
+          },
+          "errorCount": {
+            "$ref": "#/components/schemas/MetricWithDelta"
+          },
+          "rateLimitedCount": {
+            "$ref": "#/components/schemas/MetricWithDelta"
+          }
+        },
+        "required": [
+          "range",
+          "totalQueries",
+          "successRate",
+          "p50LatencyMs",
+          "p95LatencyMs",
+          "totalTokens",
+          "estimatedCost",
+          "activeCollections",
+          "errorCount",
+          "rateLimitedCount"
+        ]
+      },
+      "MetricWithDelta": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "example": 1284
+          },
+          "previous": {
+            "type": "number",
+            "example": 1102
+          }
+        },
+        "required": [
+          "value",
+          "previous"
+        ]
+      },
+      "TimeseriesResponse": {
+        "type": "object",
+        "properties": {
+          "granularity": {
+            "$ref": "#/components/schemas/TimeseriesGranularity"
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TimeseriesPoint"
+            }
+          }
+        },
+        "required": [
+          "granularity",
+          "points"
+        ]
+      },
+      "TimeseriesGranularity": {
+        "type": "string",
+        "enum": [
+          "hour",
+          "day"
+        ],
+        "example": "day"
+      },
+      "TimeseriesPoint": {
+        "type": "object",
+        "properties": {
+          "bucket": {
+            "type": "integer",
+            "example": 1753800000000
+          },
+          "success": {
+            "type": "integer",
+            "example": 120
+          },
+          "error": {
+            "type": "integer",
+            "example": 3
+          },
+          "rateLimited": {
+            "type": "integer",
+            "example": 1
+          },
+          "noResults": {
+            "type": "integer",
+            "example": 5
+          },
+          "avgLatencyMs": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 812
+          },
+          "p95LatencyMs": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 1503
+          },
+          "tokens": {
+            "type": "integer",
+            "example": 154200
+          },
+          "estimatedCost": {
+            "type": "number",
+            "example": 0.42
+          }
+        },
+        "required": [
+          "bucket",
+          "success",
+          "error",
+          "rateLimited",
+          "noResults",
+          "avgLatencyMs",
+          "p95LatencyMs",
+          "tokens",
+          "estimatedCost"
+        ]
+      },
+      "BreakdownResponse": {
+        "type": "object",
+        "properties": {
+          "byCollection": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BreakdownCount"
+            }
+          },
+          "byStatus": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BreakdownCount"
+            }
+          },
+          "byAuthType": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BreakdownCount"
+            }
+          },
+          "stageLatency": {
+            "$ref": "#/components/schemas/StageLatency"
+          }
+        },
+        "required": [
+          "byCollection",
+          "byStatus",
+          "byAuthType",
+          "stageLatency"
+        ]
+      },
+      "BreakdownCount": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "col_9f8b2a1c"
+          },
+          "label": {
+            "type": "string",
+            "example": "Product docs"
+          },
+          "count": {
+            "type": "integer",
+            "example": 842
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "count"
+        ]
+      },
+      "StageLatency": {
+        "type": "object",
+        "properties": {
+          "embed": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 30
+          },
+          "retrieval": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 55
+          },
+          "generation": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 720
+          }
+        },
+        "required": [
+          "embed",
+          "retrieval",
+          "generation"
+        ]
+      },
+      "RecentEventsResponse": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageEvent"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "1753800000000_evt_7d3f2a10"
+          }
+        },
+        "required": [
+          "events",
+          "nextCursor"
+        ]
+      },
+      "UsageEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "evt_7d3f2a10"
+          },
+          "tenantId": {
+            "type": "string",
+            "example": "org_2abc123"
+          },
+          "eventType": {
+            "$ref": "#/components/schemas/UsageEventType"
+          },
+          "createdAt": {
+            "type": "integer",
+            "example": 1753800000000
+          },
+          "collectionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "col_9f8b2a1c"
+          },
+          "documentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": null
+          },
+          "authType": {
+            "$ref": "#/components/schemas/AuthType"
+          },
+          "apiKeyId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "key_1a2b3c4d"
+          },
+          "status": {
+            "$ref": "#/components/schemas/UsageEventStatus"
+          },
+          "errorCode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": null
+          },
+          "latencyTotalMs": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 842
+          },
+          "latencyEmbedMs": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 31
+          },
+          "latencyRetrievalMs": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 58
+          },
+          "latencyGenerationMs": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 740
+          },
+          "chunksRetrieved": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 8
+          },
+          "topScore": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 0.82
+          },
+          "tokensPrompt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 1240
+          },
+          "tokensCompletion": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 96
+          },
+          "estimatedCost": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 0.00058
+          },
+          "queryLength": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 41
+          },
+          "bytesProcessed": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": null
+          },
+          "chunkCount": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": null
+          },
+          "queryText": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present only when STORE_RAW_QUERY_TEXT is on."
+          }
+        },
+        "required": [
+          "id",
+          "tenantId",
+          "eventType",
+          "createdAt",
+          "collectionId",
+          "documentId",
+          "authType",
+          "apiKeyId",
+          "status",
+          "errorCode",
+          "latencyTotalMs",
+          "latencyEmbedMs",
+          "latencyRetrievalMs",
+          "latencyGenerationMs",
+          "chunksRetrieved",
+          "topScore",
+          "tokensPrompt",
+          "tokensCompletion",
+          "estimatedCost",
+          "queryLength",
+          "bytesProcessed",
+          "chunkCount"
+        ]
+      },
+      "UsageEventType": {
+        "type": "string",
+        "enum": [
+          "query",
+          "ingestion"
+        ],
+        "example": "query"
+      },
+      "UsageEventStatus": {
+        "type": "string",
+        "enum": [
+          "success",
+          "error",
+          "rate_limited",
+          "no_results"
+        ],
+        "example": "success"
+      },
+      "IngestionStats": {
+        "type": "object",
+        "properties": {
+          "documentsProcessed": {
+            "type": "integer",
+            "example": 37
+          },
+          "avgDurationMs": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 4210
+          },
+          "avgChunksPerDoc": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 58
+          },
+          "failureRate": {
+            "type": "number",
+            "example": 0.05
+          },
+          "totalBytesProcessed": {
+            "type": "integer",
+            "example": 9128442
+          }
+        },
+        "required": [
+          "documentsProcessed",
+          "avgDurationMs",
+          "avgChunksPerDoc",
+          "failureRate",
+          "totalBytesProcessed"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Service health check",
+        "description": "Public liveness probe. No authentication required.",
+        "responses": {
+          "200": {
+            "description": "Service is up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Current authenticated principal",
+        "description": "Returns the tenant + auth type resolved from the presented credential.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The authenticated principal.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthContext"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collections": {
+      "post": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "Create a collection",
+        "description": "Create a new, empty collection scoped to the caller's tenant.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCollectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Collection created.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — malformed body or failed a field constraint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "List collections",
+        "description": "List every collection owned by the caller's tenant, newest first.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tenant's collections.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListCollectionsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collections/{id}": {
+      "get": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "Get a collection",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "col_9f8b2a1c"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The collection.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "Delete a collection",
+        "description": "Delete the collection, its documents' metadata + R2 objects, and its vector namespace. Irreversible.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "col_9f8b2a1c"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collections/{id}/documents": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Upload a document",
+        "description": "Upload a source file (PDF, plain text, or Markdown, ≤ 25 MB) as `multipart/form-data` with a `file` field. The document is stored and queued for async ingestion; it starts at status `uploaded`. Poll `GET /v1/documents/{id}/status` for progress.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "col_9f8b2a1c"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadDocumentBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Document accepted; ingestion queued.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadDocumentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing `file` field or the body was not multipart/form-data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "File exceeds the 25 MB upload limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported file type. Accepted: PDF, plain text, Markdown.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "List documents in a collection",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "col_9f8b2a1c"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Documents in the collection, newest first.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListDocumentsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/documents/{id}": {
+      "get": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Get a document",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "doc_4c1e77a0"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The document metadata.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Document not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Delete a document",
+        "description": "Delete a document's vectors, R2 objects, and metadata row. Irreversible.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "doc_4c1e77a0"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Document not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/documents/{id}/status": {
+      "get": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Get ingestion status",
+        "description": "Lightweight polling endpoint for ingestion progress.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "doc_4c1e77a0"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current ingestion status.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Document not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/documents/{id}/reingest": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Re-run ingestion",
+        "description": "Re-run the ingestion pipeline for a document (e.g. after tuning chunking). Safe to repeat — vector ids are deterministic, so a re-run overwrites rather than duplicates.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "doc_4c1e77a0"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Re-ingestion queued.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReingestDocumentResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Document not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Document is already being processed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/documents/{id}/raw": {
+      "get": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Download the original file",
+        "description": "Streams the original uploaded bytes back from storage.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "doc_4c1e77a0"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The original file bytes.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Document not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collections/{id}/query": {
+      "post": {
+        "tags": [
+          "Query"
+        ],
+        "summary": "Ask a grounded question",
+        "description": "Run the RAG pipeline over a collection: embed the question → retrieve → assemble context → generate a grounded answer with `[n]` citation markers.\n\n**Response modes** (chosen by the `stream` field):\n- `stream` omitted or `true` (default): a `text/event-stream` of Server-Sent Events. Each `data:` line is one JSON event. Order: zero or more `{\"type\":\"delta\",\"text\":\"…\"}` (incremental answer text), then one `{\"type\":\"sources\", sources, usage}` (resolved citations + accounting), then `{\"type\":\"done\"}`. On failure a single `{\"type\":\"error\",\"message\":\"…\"}` is emitted and the stream ends.\n- `stream: false`: a single JSON `QueryResponse` `{ answer, sources, usage }` — convenient for curl and offline evaluation.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "col_9f8b2a1c"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The grounded answer. `text/event-stream` when streaming (default), or a JSON QueryResponse when `stream: false`.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SSE stream of newline-delimited JSON query events (see description)."
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing/empty `query`, `query` too long, or `topK` not a number.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The collection has no ready documents yet — upload and wait for ingestion.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No relevant content found for the question in the collection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded — too many requests for this API key.",
+            "headers": {
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests allowed per minute for the presented API key."
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Requests remaining in the current sliding window."
+              },
+              "RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the window frees capacity."
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds the caller should wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimitErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/api-keys": {
+      "post": {
+        "tags": [
+          "API Keys"
+        ],
+        "summary": "Create an API key",
+        "description": "Mint a new API key. The plaintext `key` is returned exactly once in this response and never again — store it securely. Session-only: an API key cannot create keys.",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Key created; `key` shown once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — malformed body or failed a field constraint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing session, or an API key was presented (keys cannot manage keys).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "API Keys"
+        ],
+        "summary": "List API keys",
+        "description": "List the tenant's API keys. Never returns key material.",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tenant's API keys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListApiKeysResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/api-keys/{id}": {
+      "delete": {
+        "tags": [
+          "API Keys"
+        ],
+        "summary": "Revoke an API key",
+        "description": "Revoke (soft-delete) a key. Takes effect immediately.",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "key_1a2b3c4d"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked."
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "API key not found (or owned by another tenant).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/analytics/summary": {
+      "get": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "KPI summary",
+        "description": "Dashboard analytics. Session-only — API keys are rejected. Tenant-scoped.",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "1753200000000",
+              "description": "Inclusive window start — epoch ms or ISO-8601. Defaults to 7 days ago."
+            },
+            "required": false,
+            "description": "Inclusive window start — epoch ms or ISO-8601. Defaults to 7 days ago.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "1753800000000",
+              "description": "Exclusive window end — epoch ms or ISO-8601. Defaults to now."
+            },
+            "required": false,
+            "description": "Exclusive window end — epoch ms or ISO-8601. Defaults to now.",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "col_9f8b2a1c",
+              "description": "Restrict to a single collection."
+            },
+            "required": false,
+            "description": "Restrict to a single collection.",
+            "name": "collectionId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "KPI summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid range: `from` must be a valid timestamp before `to`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/analytics/timeseries": {
+      "get": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "Query volume time series",
+        "description": "Dashboard analytics. Session-only — API keys are rejected. Tenant-scoped.",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "1753200000000",
+              "description": "Inclusive window start — epoch ms or ISO-8601. Defaults to 7 days ago."
+            },
+            "required": false,
+            "description": "Inclusive window start — epoch ms or ISO-8601. Defaults to 7 days ago.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "1753800000000",
+              "description": "Exclusive window end — epoch ms or ISO-8601. Defaults to now."
+            },
+            "required": false,
+            "description": "Exclusive window end — epoch ms or ISO-8601. Defaults to now.",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "col_9f8b2a1c",
+              "description": "Restrict to a single collection."
+            },
+            "required": false,
+            "description": "Restrict to a single collection.",
+            "name": "collectionId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "hour",
+                "day"
+              ],
+              "example": "day"
+            },
+            "required": false,
+            "name": "granularity",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Query volume time series",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimeseriesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid range: `from` must be a valid timestamp before `to`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/analytics/breakdown": {
+      "get": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "Breakdowns by collection/status/auth",
+        "description": "Dashboard analytics. Session-only — API keys are rejected. Tenant-scoped.",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "1753200000000",
+              "description": "Inclusive window start — epoch ms or ISO-8601. Defaults to 7 days ago."
+            },
+            "required": false,
+            "description": "Inclusive window start — epoch ms or ISO-8601. Defaults to 7 days ago.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "1753800000000",
+              "description": "Exclusive window end — epoch ms or ISO-8601. Defaults to now."
+            },
+            "required": false,
+            "description": "Exclusive window end — epoch ms or ISO-8601. Defaults to now.",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "col_9f8b2a1c",
+              "description": "Restrict to a single collection."
+            },
+            "required": false,
+            "description": "Restrict to a single collection.",
+            "name": "collectionId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Breakdowns by collection/status/auth",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BreakdownResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid range: `from` must be a valid timestamp before `to`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/analytics/recent": {
+      "get": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "Recent events (paginated)",
+        "description": "Dashboard analytics. Session-only — API keys are rejected. Tenant-scoped.",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "1753200000000",
+              "description": "Inclusive window start — epoch ms or ISO-8601. Defaults to 7 days ago."
+            },
+            "required": false,
+            "description": "Inclusive window start — epoch ms or ISO-8601. Defaults to 7 days ago.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "1753800000000",
+              "description": "Exclusive window end — epoch ms or ISO-8601. Defaults to now."
+            },
+            "required": false,
+            "description": "Exclusive window end — epoch ms or ISO-8601. Defaults to now.",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "col_9f8b2a1c",
+              "description": "Restrict to a single collection."
+            },
+            "required": false,
+            "description": "Restrict to a single collection.",
+            "name": "collectionId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "success",
+                "error",
+                "rate_limited",
+                "no_results"
+              ]
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "25",
+              "description": "Page size (1–100)."
+            },
+            "required": false,
+            "description": "Page size (1–100).",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque cursor from a previous page's `nextCursor`."
+            },
+            "required": false,
+            "description": "Opaque cursor from a previous page's `nextCursor`.",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent events (paginated)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecentEventsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid range: `from` must be a valid timestamp before `to`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/analytics/ingestion": {
+      "get": {
+        "tags": [
+          "Analytics"
+        ],
+        "summary": "Ingestion statistics",
+        "description": "Dashboard analytics. Session-only — API keys are rejected. Tenant-scoped.",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "1753200000000",
+              "description": "Inclusive window start — epoch ms or ISO-8601. Defaults to 7 days ago."
+            },
+            "required": false,
+            "description": "Inclusive window start — epoch ms or ISO-8601. Defaults to 7 days ago.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "1753800000000",
+              "description": "Exclusive window end — epoch ms or ISO-8601. Defaults to now."
+            },
+            "required": false,
+            "description": "Exclusive window end — epoch ms or ISO-8601. Defaults to now.",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "col_9f8b2a1c",
+              "description": "Restrict to a single collection."
+            },
+            "required": false,
+            "description": "Restrict to a single collection.",
+            "name": "collectionId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ingestion statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestionStats"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid range: `from` must be a valid timestamp before `to`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/openapi.json": {
+      "get": {
+        "tags": [
+          "Meta"
+        ],
+        "summary": "OpenAPI spec (JSON)",
+        "description": "The machine-readable OpenAPI 3.1 document describing this API. Public, cached.",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.1 specification for this API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "description": "An OpenAPI 3.1 document."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/openapi.yaml": {
+      "get": {
+        "tags": [
+          "Meta"
+        ],
+        "summary": "OpenAPI spec (YAML)",
+        "description": "The OpenAPI 3.1 document as YAML. Public, cached.",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI 3.1 specification (YAML).",
+            "content": {
+              "application/yaml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {}
+}
