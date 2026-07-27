@@ -28,9 +28,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
+    // suppressHydrationWarning on <html>: next-themes' pre-paint script sets
+    // `class="dark"` and `style="color-scheme:dark"` before React hydrates, so
+    // the server markup for this element intentionally differs.
     <html
       lang="en"
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
       {/* suppressHydrationWarning: browser extensions (e.g. ColorZilla) inject
           attributes into <body> before hydration; only this element is affected. */}

@@ -13,13 +13,18 @@ import { Section, SectionHeading } from "./section";
  * note above the grid says so explicitly. Update this array, not the markup,
  * when real plans exist.
  */
+
+/** Enterprise enquiries go straight to a mailbox; there is no /contact page. */
+const CONTACT_EMAIL = "luc4sfur7ado@gmail.com";
+const CONTACT_HREF = `mailto:${CONTACT_EMAIL}`;
+
 const PLANS = [
   {
     name: "Developer",
     price: "$0",
     cadence: "forever",
     blurb: "Enough to build and ship a first integration.",
-    cta: { label: "Start building", href: "/sign-up" },
+    cta: { label: "Start building", href: "/sign-up", external: false },
     featured: false,
     features: [
       "3 collections, 100 documents",
@@ -30,26 +35,11 @@ const PLANS = [
     ],
   },
   {
-    name: "Pro",
-    price: "$49",
-    cadence: "per month",
-    blurb: "For products with real users asking real questions.",
-    cta: { label: "Upgrade to Pro", href: "/sign-up" },
-    featured: true,
-    features: [
-      "Unlimited collections and documents",
-      "600 requests / minute per API key",
-      "Usage analytics, latency and cost breakdowns",
-      "Multiple API keys with per-key limits",
-      "Email support, one business day",
-    ],
-  },
-  {
     name: "Enterprise",
     price: "Custom",
     cadence: "annual",
     blurb: "For regulated workloads and dedicated capacity.",
-    cta: { label: "Talk to us", href: "/contact" },
+    cta: { label: "Talk to us", href: CONTACT_HREF, external: true },
     featured: false,
     features: [
       "Dedicated namespaces and region pinning",
@@ -71,7 +61,7 @@ export function Pricing() {
         description="Billing is not switched on yet — every tier below is free while the platform is in beta, and existing projects keep their allowances when it lands."
       />
 
-      <div className="mt-12 grid items-start gap-4 lg:grid-cols-3">
+      <div className="mx-auto mt-12 grid max-w-3xl items-start gap-4 lg:grid-cols-2">
         {PLANS.map((plan) => (
           <div
             key={plan.name}
@@ -99,7 +89,13 @@ export function Pricing() {
             <Button
               className="w-full"
               variant={plan.featured ? "default" : "outline"}
-              render={<Link href={plan.cta.href} />}
+              render={
+                plan.cta.external ? (
+                  <a href={plan.cta.href} />
+                ) : (
+                  <Link href={plan.cta.href} />
+                )
+              }
             >
               {plan.cta.label}
             </Button>
@@ -121,9 +117,9 @@ export function Pricing() {
 
       <p className="mt-8 text-center text-sm text-muted-foreground">
         Need something in between?{" "}
-        <Link href="/contact" className="underline underline-offset-4 hover:text-foreground">
+        <a href={CONTACT_HREF} className="underline underline-offset-4 hover:text-foreground">
           Tell us about your workload
-        </Link>
+        </a>
         .
       </p>
     </Section>

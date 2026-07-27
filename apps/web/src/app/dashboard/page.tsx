@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRightIcon, FolderIcon, KeyRoundIcon } from "lucide-react";
+import { ArrowRightIcon, FolderIcon, KeyRoundIcon, SparklesIcon } from "lucide-react";
 import type { Collection } from "@rag/shared";
 import { RequireAuth } from "@/components/require-auth";
 import { useApi } from "@/lib/use-api";
@@ -59,6 +59,13 @@ function DashboardContent() {
     [collections],
   );
 
+  // The playground is always scoped to one collection, so the header CTA opens
+  // the first one the user has. With no collections there is nothing to query
+  // yet — send them to the place where they create one instead.
+  const playgroundTarget = collections?.[0]
+    ? `/dashboard/collections/playground/?id=${encodeURIComponent(collections[0].id)}`
+    : "/dashboard/collections/";
+
   const filters = { from, to, collectionId: undefined };
   const summary = useAnalyticsResource(`summary|${from}|${to}`, () =>
     api.getAnalyticsSummary(filters),
@@ -69,7 +76,18 @@ function DashboardContent() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-12">
-      <h1 className="mb-6 font-heading text-2xl font-semibold">Dashboard</h1>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-heading text-2xl font-semibold">Welcome back</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            A snapshot of your queries, tokens, and spend over the last 7 days.
+          </p>
+        </div>
+        <Button render={<Link href={playgroundTarget} />} size="sm">
+          <SparklesIcon data-icon="inline-start" />
+          Open playground
+        </Button>
+      </div>
 
       {/* Analytics overview — last 7 days */}
       <div className="mb-6">

@@ -50,10 +50,20 @@ const STATUS_BADGE: Record<
   DocumentStatus,
   "default" | "secondary" | "outline" | "destructive"
 > = {
-  uploaded: "secondary",
+  // `uploaded` is a blink-and-you-miss-it hop before the ingestion workflow
+  // picks the document up, so it renders identically to `processing` — one
+  // steady "work in progress" chip instead of a badge that changes twice.
+  uploaded: "outline",
   processing: "outline",
   ready: "default",
   error: "destructive",
+};
+
+const STATUS_LABEL: Record<DocumentStatus, string> = {
+  uploaded: "processing",
+  processing: "processing",
+  ready: "ready",
+  error: "error",
 };
 
 /** How often to poll /status while any document is still being ingested. */
@@ -130,11 +140,13 @@ function CollectionView() {
   useEffect(() => {
     if (!unsettledIds) return;
     const ids = unsettledIds.split(",");
+    let cancelled = false;
 
     const tick = async () => {
       const results = await Promise.allSettled(
         ids.map(async (id) => ({ id, status: await api.getDocumentStatus(id) })),
       );
+      if (cancelled) return;
       const byId = new Map(
         results
           .filter((r) => r.status === "fulfilled")
@@ -157,8 +169,15 @@ function CollectionView() {
       );
     };
 
+    // Poll once straight away: a fresh upload sits at `uploaded` until the
+    // workflow claims it, and waiting a full interval to notice makes the
+    // handoff look stalled.
+    void tick();
     const interval = setInterval(() => void tick(), STATUS_POLL_MS);
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [api, unsettledIds]);
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -177,7 +196,7 @@ function CollectionView() {
     try {
       const doc = await api.uploadDocument(collectionId, file);
       setDocuments((prev) => [doc, ...(prev ?? [])]);
-      toast.success(`“${doc.filename}” uploaded`);
+      toast.success(`“${doc.filename}” uploaded — processing now`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -347,10 +366,10 @@ function CollectionView() {
                     )}
                   </div>
                   <Badge variant={STATUS_BADGE[doc.status]}>
-                    {doc.status === "processing" && (
+                    {isUnsettled(doc.status) && (
                       <RefreshCwIcon className="size-3 animate-spin" />
                     )}
-                    {doc.status}
+                    {STATUS_LABEL[doc.status]}
                   </Badge>
                   <Button
                     variant="ghost"

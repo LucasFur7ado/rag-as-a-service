@@ -112,7 +112,12 @@
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  /* Cards sit flush with the page, exactly as they do in light mode (where
+     --card and --background are both white). The `ring-1 ring-foreground/10`
+     on the card shell is what delimits them, so surfaces stay flat and the
+     dashboard reads as one plane instead of a stack of grey tiles.
+     --popover stays lifted: menus and sheets float *above* the page. */
+  --card: oklch(0.145 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
