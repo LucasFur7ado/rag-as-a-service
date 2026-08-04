@@ -5,10 +5,15 @@
 
 /**
  * Base URL of the RAG API used in docs examples and the "Try it" console.
- * Shares NEXT_PUBLIC_API_URL with the rest of the app (see lib/api-client.ts).
+ *
+ * The API is part of this app now, so it lives at `/api` on the same origin.
+ * Docs samples (curl, Python) must still show an ABSOLUTE url to be
+ * copy-pasteable, which is why this cannot just be `/api` like the in-app
+ * client's default — set NEXT_PUBLIC_API_URL to the deployed origin plus
+ * `/api` and every sample follows. Falls back to local dev.
  */
 export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787";
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000/api";
 
 /** Public source repository, linked from the docs footer/overview. */
 export const REPO_URL =

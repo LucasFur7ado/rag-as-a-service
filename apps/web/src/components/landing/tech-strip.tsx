@@ -4,11 +4,11 @@
  * up (see the architecture section of the repo README).
  */
 const STACK = [
-  "Cloudflare Workers",
-  "Workers AI · BGE-M3",
-  "Llama 3.3 70B",
+  "Next.js on Vercel",
+  "Gemini Embeddings",
+  "Gemini 2.5 Flash",
   "Pinecone",
-  "D1 + R2",
+  "Neon Postgres",
   "Clerk",
 ];
 
@@ -17,7 +17,7 @@ export function TechStrip() {
     <section aria-label="Platform infrastructure" className="border-t bg-muted/30 py-10">
       <div className="mx-auto flex max-w-5xl flex-col items-center gap-5 px-4">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Built on infrastructure that scales to the edge
+          Built on serverless infrastructure that scales on demand
         </p>
         <ul className="flex flex-wrap items-center justify-center gap-x-8 gap-y-3">
           {STACK.map((item) => (

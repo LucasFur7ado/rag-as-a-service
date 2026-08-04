@@ -3,8 +3,8 @@ import { z } from "zod";
 import { DocumentStatusSchema, epochMillis } from "./common";
 
 /**
- * A source document uploaded into a collection. The raw bytes live in R2; this
- * record (D1 `documents` table) is the metadata handle.
+ * A source document uploaded into a collection. The raw bytes live in blob
+ * storage; this record (the `documents` table) is the metadata handle.
  */
 export const DocumentSchema = z
   .object({

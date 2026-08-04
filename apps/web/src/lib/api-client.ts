@@ -24,15 +24,19 @@ import type {
 } from "@rag/shared";
 
 /**
- * Typed client for the RAG API worker (apps/api).
+ * Typed client for the RAG API.
  *
- * Reads the base URL from NEXT_PUBLIC_API_URL and attaches the caller's Clerk
- * session token as a `Bearer` header. Pass a token getter — in this static
- * export that is always the client-side `useAuth().getToken` from
- * `@clerk/react`; there is no server runtime to fetch from.
+ * The API lives in this same Next.js app as Route Handlers under
+ * `src/app/api`, so the default base URL is the same-origin `/api` — no CORS,
+ * no cross-origin preflight, and no build-time host to configure. Set
+ * NEXT_PUBLIC_API_URL only to point the dashboard at an API on another origin.
+ *
+ * Attaches the caller's Clerk session token as a `Bearer` header. Pass a token
+ * getter — in the dashboard that is the client-side `useAuth().getToken` from
+ * `@clerk/react`.
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 /** Returns the current Clerk session JWT, or null when signed out. */
 export type TokenGetter = () => Promise<string | null>;

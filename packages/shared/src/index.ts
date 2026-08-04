@@ -7,7 +7,7 @@
  * same schemas — so the docs, the runtime validation, and the compile-time
  * types can never drift apart.
  *
- * Both apps import from here: `apps/web` (Next.js) and `apps/api` (Cloudflare
+ * Imported by both halves of the app: the browser client and the API route
  * Worker). The only runtime dependency is `zod`.
  */
 import type { z } from "zod";
@@ -76,7 +76,7 @@ import type {
 
 /** ISO-8601 timestamp string, e.g. "2026-07-21T12:34:56.000Z". */
 export type IsoDateString = string;
-/** Epoch milliseconds — how the API stores and returns timestamps (D1 integer). */
+/** Epoch milliseconds — how the API stores and returns timestamps (bigint). */
 export type EpochMillis = number;
 
 /**

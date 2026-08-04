@@ -15,7 +15,7 @@ const STEPS = [
     icon: SearchIcon,
     title: "Ingestion runs itself",
     body:
-      "Text is extracted (page numbers intact), split into overlapping chunks, embedded with BGE-M3 and upserted into your namespace. Watch status go processing → ready in the dashboard.",
+      "Text is extracted (page numbers intact), split into overlapping chunks, embedded with Gemini and upserted into your namespace. Watch status go processing → ready in the dashboard.",
     code: "GET /v1/documents/:id/status",
   },
   {

@@ -1,17 +1,20 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Fully static export: `next build` emits a self-contained site to `out/`
-  // that can be served from any static host (S3 + CloudFront, Cloudflare
-  // Pages/R2, nginx, ...). There is no Next.js server runtime.
-  output: "export",
+  // Server-rendered (the default). `output: "export"` is deliberately gone:
+  // the backend now lives in this app as Route Handlers under `src/app/api`,
+  // and a static export has no server runtime to run them. Deploying to Vercel
+  // needs no adapter — `next build` output is consumed natively.
 
-  // next/image's default loader needs a server to optimize on the fly.
-  images: { unoptimized: true },
+  // `trailingSlash` is likewise gone. It existed so a plain static file server
+  // could resolve `/docs` to `out/docs/index.html`; with a real server there
+  // is nothing to work around, and keeping it would have redirected every API
+  // route (`/api/v1/collections` → `/api/v1/collections/`), breaking clients.
 
-  // Emit `out/<route>/index.html` (directory-style URLs) so plain static file
-  // servers resolve every route without custom rewrite rules.
-  trailingSlash: true,
+  // `unpdf` bundles its own PDF.js build with dynamic requires that Next's
+  // bundler cannot statically analyze. Marking it external keeps it as a plain
+  // Node dependency of the function instead.
+  serverExternalPackages: ["unpdf"],
 };
 
 export default nextConfig;

@@ -56,8 +56,9 @@ const FAQS: Array<{ q: string; a: React.ReactNode }> = [
     q: "How are rate limits enforced?",
     a: (
       <p>
-        Per key, per minute, counted atomically by a Durable Object — 60 requests
-        a minute by default and overridable per key. Every response carries{" "}
+        Per key, per minute, over a sliding window counted atomically in
+        Postgres — 60 requests a minute by default and overridable per key.
+        Every response carries{" "}
         <code>RateLimit-*</code> headers, and a 429 includes{" "}
         <code>Retry-After</code>. See{" "}
         <Link href="/docs/rate-limits">the rate limits guide</Link>.
@@ -68,9 +69,9 @@ const FAQS: Array<{ q: string; a: React.ReactNode }> = [
     q: "Which models power retrieval and generation?",
     a: (
       <p>
-        Embeddings use BGE-M3 on Workers AI (1024-dimensional, cosine), and answers
-        are generated with Llama 3.3 70B. Queries are embedded with the exact model
-        used at ingestion time, so retrieval stays consistent.
+        Embeddings use Gemini (1024-dimensional, cosine) and answers are
+        generated with Gemini 2.5 Flash. Queries are embedded with the exact
+        model used at ingestion time, so retrieval stays consistent.
       </p>
     ),
   },
@@ -78,9 +79,9 @@ const FAQS: Array<{ q: string; a: React.ReactNode }> = [
     q: "Do I have to run any infrastructure?",
     a: (
       <p>
-        No. The API is a Cloudflare Worker and the dashboard is a static SPA. You
-        bring documents and an API key; there is no cluster, queue or vector
-        database for you to operate.
+        No. The API and the dashboard are one serverless Next.js app. You bring
+        documents and an API key; there is no cluster, queue or vector database
+        for you to operate.
       </p>
     ),
   },

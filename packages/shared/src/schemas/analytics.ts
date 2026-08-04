@@ -9,9 +9,9 @@ import {
 } from "./common";
 
 /**
- * One recorded usage event. Mirrors the D1 `usage_events` row. Privacy: raw
+ * One recorded usage event. Mirrors the `usage_events` row. Privacy: raw
  * query text is NEVER included unless STORE_RAW_QUERY_TEXT is on — only a hash
- * and length. Nullable columns surface as `null` (D1-native) rather than absent.
+ * and length. Nullable columns surface as `null` rather than absent.
  */
 export const UsageEventSchema = z
   .object({

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "RAG as a Service API",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Multi-tenant retrieval-augmented generation platform. Upload documents into collections, then ask grounded questions and get answers with citations. Authenticate with an API key (`Authorization: Bearer rag_live_…`) for programmatic access, or a Clerk session for dashboard-only endpoints.",
     "contact": {
       "name": "RAG as a Service",
@@ -11,7 +11,7 @@
   },
   "servers": [
     {
-      "url": "http://localhost:8787",
+      "url": "http://localhost:3000/api",
       "description": "Local development"
     }
   ],
@@ -495,7 +495,7 @@
           },
           "model": {
             "type": "string",
-            "example": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+            "example": "gemini-2.5-flash"
           }
         },
         "required": [
@@ -1568,7 +1568,7 @@
           "Collections"
         ],
         "summary": "Delete a collection",
-        "description": "Delete the collection, its documents' metadata + R2 objects, and its vector namespace. Irreversible.",
+        "description": "Delete the collection, its documents' metadata + stored files, and its vector namespace. Irreversible.",
         "security": [
           {
             "ApiKeyAuth": []
@@ -2039,7 +2039,7 @@
           "Documents"
         ],
         "summary": "Delete a document",
-        "description": "Delete a document's vectors, R2 objects, and metadata row. Irreversible.",
+        "description": "Delete a document's vectors, stored file, and metadata row. Irreversible.",
         "security": [
           {
             "ApiKeyAuth": []

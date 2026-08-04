@@ -4,7 +4,7 @@ import { epochMillis } from "./common";
 
 /**
  * A collection is a named group of documents indexed together and queried as a
- * unit (one knowledge base / one vector namespace). Mirrors the D1
+ * unit (one knowledge base / one vector namespace). Mirrors the
  * `collections` table (apps/api/src/db/schema.ts).
  */
 export const CollectionSchema = z

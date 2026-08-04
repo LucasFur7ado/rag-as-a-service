@@ -18,7 +18,7 @@ const USAGE = [
   { label: "Retrieved", value: "8 chunks" },
   { label: "Used", value: "5 chunks" },
   { label: "Context", value: "1,240 tokens" },
-  { label: "Model", value: "llama-3.3-70b" },
+  { label: "Model", value: "gemini-2.5-flash" },
 ];
 
 /** Small superscript chip standing in for an inline citation marker. */

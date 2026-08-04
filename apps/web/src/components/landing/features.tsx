@@ -25,7 +25,7 @@ const FEATURES: Feature[] = [
     icon: WorkflowIcon,
     title: "Durable ingestion pipeline",
     body:
-      "Upload a PDF, Markdown or text file and get an immediate response. A Cloudflare Workflow then parses, chunks, embeds and upserts it — every phase retried with exponential backoff, every vector id deterministic so re-runs overwrite instead of duplicating.",
+      "Upload a PDF, Markdown or text file and get an immediate response. A background pipeline then parses, chunks, embeds and upserts it — every phase retried with exponential backoff, every vector id deterministic so re-runs overwrite instead of duplicating.",
     detail: "extract → chunk → embed → upsert → ready",
     span: "md:col-span-4",
   },
@@ -47,7 +47,7 @@ const FEATURES: Feature[] = [
     icon: KeyRoundIcon,
     title: "API keys and rate limits",
     body:
-      "Mint scoped keys from the dashboard, shown once and stored hashed. Traffic is metered per key by an atomic Durable Object with RateLimit-* headers on every response.",
+      "Mint scoped keys from the dashboard, shown once and stored hashed. Traffic is metered per key by an atomic sliding window with RateLimit-* headers on every response.",
     span: "md:col-span-2",
   },
   {

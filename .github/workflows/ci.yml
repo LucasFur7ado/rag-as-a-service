@@ -1,0 +1,103 @@
+name: CI
+
+# Continuous integration for the Next.js app on Vercel.
+#
+#   push to main  → check → migrate (production database)
+#   pull request  → check only
+#
+# NOTE: this workflow does NOT deploy. Vercel's own Git integration builds and
+# deploys every push and pull request; duplicating that here with the Vercel
+# CLI would mean two builds per commit racing for the same deployment. What
+# GitHub Actions owns is the part Vercel does not: running database migrations
+# against production, so new code never meets an older schema.
+#
+# One-time setup (repo secrets, Vercel project settings) is documented in
+# README → "Continuous deployment".
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Allows a manual re-run from the Actions tab without an empty commit.
+  workflow_dispatch:
+
+# Never let two migration runs race.
+concurrency:
+  group: ci-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Typecheck, lint, test & build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # Version comes from the root package.json "packageManager" field.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # NON-BLOCKING for now. `apps/web` has 6 pre-existing
+      # react-hooks/set-state-in-effect errors (api-keys, collections,
+      # collections/view, recent-queries, on-this-page) that predate this
+      # pipeline. Failing here would block every push on unrelated debt, so
+      # the result is reported but does not gate. Fix those, then delete this
+      # line to make lint blocking.
+      - name: Lint
+        run: pnpm lint
+        continue-on-error: true
+
+      - name: Test
+        run: pnpm test
+
+      # Catches what typecheck alone misses (invalid route exports, a broken
+      # OpenAPI spec — `prebuild` regenerates and validates it). No real
+      # credentials are needed: every environment variable is read at request
+      # time, never during the build.
+      - name: Build
+        run: pnpm build
+
+  migrate:
+    name: Apply database migrations
+    needs: check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Already-applied migrations are skipped (drizzle tracks them in its own
+      # table), so this is safe on every push. Migrations are expected to be
+      # additive — a destructive one needs a deliberate two-phase rollout,
+      # because this job and the Vercel deploy are not ordered relative to each
+      # other. If strict ordering ever matters, disable Vercel's Git
+      # integration for production and trigger it from a deploy hook after
+      # this job succeeds.
+      - name: Migrate
+        run: pnpm db:migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

@@ -5,13 +5,15 @@ import { ClerkProvider } from "@clerk/react";
 import { ThemeProvider, useTheme } from "next-themes";
 
 /**
- * Client-side Clerk provider for the static export.
+ * Client-side Clerk provider.
  *
- * We use `@clerk/react` rather than `@clerk/nextjs` here: the App Router
- * `ClerkProvider` from `@clerk/nextjs` registers Server Actions internally
- * (`dist/esm/app-router/server-actions.js`, keyless mode), and `next build`
- * fails outright with "Server Actions are not supported with static export."
- * `@clerk/react` is the same Clerk core with a pure browser-side provider.
+ * We use `@clerk/react` rather than `@clerk/nextjs`. The original reason (the
+ * App Router `ClerkProvider` registers Server Actions, which a static export
+ * rejects) no longer applies now that the app is server-rendered, but the
+ * choice still holds: auth is a pure browser concern here. The API is the real
+ * trust boundary and verifies the Clerk JWT on every request itself, so nothing
+ * server-side needs a Clerk session — which is also why this app needs no
+ * CLERK_SECRET_KEY.
  *
  * `routerPush`/`routerReplace` are wired to the Next router so Clerk's internal
  * navigations use client-side routing instead of full page loads.

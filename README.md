@@ -1,15 +1,14 @@
 # RAG as a Service
 
-A multi-tenant **Retrieval-Augmented Generation** platform, scaffolded as a
-pnpm monorepo. Implemented so far:
+A multi-tenant **Retrieval-Augmented Generation** platform, built as a Next.js
+app deployed to Vercel. Implemented so far:
 
-- **Feature 1 — collections & documents**: tenant-scoped CRUD backed by
-  Cloudflare D1 (metadata, via Drizzle ORM) and R2 (raw files), with a
+- **Feature 1 — collections & documents**: tenant-scoped CRUD backed by Neon
+  Postgres (metadata, via Drizzle ORM) and Vercel Blob (raw files), with a
   dashboard UI.
 - **Feature 2 — async ingestion pipeline**: uploads are parsed, chunked,
-  embedded (Workers AI, BGE-M3) and upserted to Pinecone by a durable
-  Cloudflare Workflow, with live status in the dashboard. See
-  [Ingestion pipeline](#ingestion-pipeline-feature-2).
+  embedded (Gemini) and upserted to Pinecone in the background, with live status
+  in the dashboard. See [Ingestion pipeline](#ingestion-pipeline-feature-2).
 - **Feature 3 — query pipeline**: a natural-language question is embedded,
   retrieved against the tenant+collection namespace, assembled into a bounded
   context and answered — grounded strictly in the retrieved chunks, streamed
@@ -18,102 +17,96 @@ pnpm monorepo. Implemented so far:
 - **Feature 4 — API keys & rate limiting**: tenants mint API keys to call the
   product API programmatically; the public endpoints accept a Clerk session
   **or** an API key, and API-key traffic is rate-limited per key by an atomic
-  Durable Object. See [Authentication](#authentication-session-or-api-key) and
+  Postgres sliding window. See
+  [Authentication](#authentication-session-or-api-key) and
   [Rate limiting](#rate-limiting-feature-4).
-
-This is the full feature set for the current scaffold.
+- **Feature 5 — usage analytics**: every query and ingestion is recorded and
+  surfaced on a dashboard. See [Usage analytics](#usage-analytics-feature-5).
+- **Feature 6 — API documentation**: an OpenAPI 3.1 spec generated from the same
+  Zod schemas the app's types come from, plus hosted docs. See
+  [API documentation](#api-documentation-feature-6).
 
 ## Architecture
 
-Two deployables plus a shared types package:
+**One deployable.** The Next.js app *is* the backend: every endpoint is a Route
+Handler under `apps/web/src/app/api`, and all backend logic lives in
+`apps/web/src/server`.
 
 ```
 .
 ├── apps/
-│   ├── web/        # Next.js 16 (App Router) frontend — Tailwind, shadcn/ui, Clerk.
-│   │               # Static export (`output: 'export'`) → `out/`, any static host.
-│   └── api/        # Cloudflare Worker backend API — Hono router, Clerk JWT auth.
-│                   # Managed as IaC via wrangler.jsonc.
+│   └── web/        # Next.js 16 (App Router) — frontend AND API. Deployed to Vercel.
+│       ├── src/app/api/   # Route Handlers (the API surface)
+│       ├── src/server/    # backend logic: db, auth, services, openapi
+│       └── drizzle/       # generated SQL migrations
 ├── packages/
-│   └── shared/     # Shared TypeScript domain types (no runtime logic).
+│   └── shared/     # Zod schemas + inferred domain types, shared by both halves
 ├── pnpm-workspace.yaml
 └── tsconfig.base.json   # strict TS config extended by every package
 ```
 
-**Web ↔ API split.** The web app is a fully static, client-rendered SPA (no
-server runtime): the landing page is pre-rendered to HTML at build time and
-everything else runs in the browser. Auth is Clerk **client-side only** — there
-is no Next middleware/proxy and no server-side session. It talks to the API
-worker over HTTP: the typed
-client in [`apps/web/src/lib/api-client.ts`](apps/web/src/lib/api-client.ts)
-attaches the Clerk session token as a `Bearer` header (see the example `/me`
-call). The API worker verifies that token against Clerk's JWKS and derives
-`{ userId, tenantId }` for every protected request.
-
-**Implemented — collections & documents (Feature 1):**
+Because frontend and API share an origin, the browser client
+([`api-client.ts`](apps/web/src/lib/api-client.ts)) calls a relative `/api` —
+no CORS, no preflight, and no build-time API host to configure. It attaches the
+Clerk session token as a `Bearer` header; the route handlers verify that token
+against Clerk's JWKS and derive `{ userId, tenantId }` for every protected
+request.
 
 | Piece | Location |
 | --- | --- |
-| D1 schema (Drizzle) + serializers | [`apps/api/src/db/`](apps/api/src/db/) |
-| SQL migrations (drizzle-kit output) | [`apps/api/migrations/`](apps/api/migrations/) |
-| Collections API (`/v1/collections`, incl. document upload/list) | [`apps/api/src/routes/collections.ts`](apps/api/src/routes/collections.ts) |
-| Documents API (`/v1/documents`) | [`apps/api/src/routes/documents.ts`](apps/api/src/routes/documents.ts) |
-| Dashboard UI (list + detail via `view?id=…`) | [`apps/web/src/app/dashboard/collections/`](apps/web/src/app/dashboard/collections/) |
-| Typed API client | [`apps/web/src/lib/api-client.ts`](apps/web/src/lib/api-client.ts) |
-
-**Implemented — ingestion pipeline (Feature 2):**
-
-| Piece | Location |
-| --- | --- |
-| Durable ingestion Workflow (parse → chunk → embed → upsert) | [`apps/api/src/workflows/ingest.ts`](apps/api/src/workflows/ingest.ts) |
-| Queue consumer (starts one Workflow instance per upload) | [`apps/api/src/index.ts`](apps/api/src/index.ts) |
-| Text extraction (PDF via `unpdf`, txt/markdown) | [`apps/api/src/lib/extract.ts`](apps/api/src/lib/extract.ts) |
-| Recursive chunker with overlap | [`apps/api/src/lib/chunking.ts`](apps/api/src/lib/chunking.ts) |
-| Embeddings (Workers AI, `@cf/baai/bge-m3`) | [`apps/api/src/services/embeddings.ts`](apps/api/src/services/embeddings.ts) |
-| Vector store (Pinecone over REST) + namespace/id helpers | [`apps/api/src/services/vectorstore.ts`](apps/api/src/services/vectorstore.ts) |
-| Tuning constants (chunk sizes, batch limits, model/dimension) | [`apps/api/src/config.ts`](apps/api/src/config.ts) |
-| Status & reingest endpoints (`/v1/documents/:id/status`, `.../reingest`) | [`apps/api/src/routes/documents.ts`](apps/api/src/routes/documents.ts) |
+| Postgres schema (Drizzle) + serializers | [`apps/web/src/server/db/`](apps/web/src/server/db/) |
+| SQL migrations (drizzle-kit output) | [`apps/web/drizzle/`](apps/web/drizzle/) |
+| Unified auth middleware (session **or** API key) | [`server/lib/auth.ts`](apps/web/src/server/lib/auth.ts) |
+| Route-handler plumbing (errors, CORS, JSON) | [`server/lib/http.ts`](apps/web/src/server/lib/http.ts) |
+| Collections / documents endpoints | [`app/api/v1/collections/`](apps/web/src/app/api/v1/collections/), [`app/api/v1/documents/`](apps/web/src/app/api/v1/documents/) |
+| Query endpoint (SSE + JSON) | [`app/api/v1/collections/[id]/query/`](apps/web/src/app/api/v1/collections/%5Bid%5D/query/route.ts) |
+| Ingestion pipeline | [`server/services/ingest.ts`](apps/web/src/server/services/ingest.ts) |
+| Text extraction (PDF via `unpdf`, txt/markdown) | [`server/lib/extract.ts`](apps/web/src/server/lib/extract.ts) |
+| Recursive chunker with overlap | [`server/lib/chunking.ts`](apps/web/src/server/lib/chunking.ts) |
+| Embeddings + generation (Gemini) | [`server/services/embeddings.ts`](apps/web/src/server/services/embeddings.ts), [`llm.ts`](apps/web/src/server/services/llm.ts) |
+| Vector store (Pinecone over REST) | [`server/services/vectorstore.ts`](apps/web/src/server/services/vectorstore.ts) |
+| Per-key rate limiter | [`server/services/ratelimit.ts`](apps/web/src/server/services/ratelimit.ts) |
+| Tuning constants (chunk sizes, batch limits, models) | [`server/config.ts`](apps/web/src/server/config.ts) |
+| Dashboard UI | [`app/dashboard/`](apps/web/src/app/dashboard/) |
 
 All endpoints are tenant-scoped: every query filters by the `tenantId` derived
-from the Clerk JWT, and resources owned by another tenant return **404** (never
+from the credential, and resources owned by another tenant return **404** (never
 a 403 that would leak existence). Uploads accept PDF / plain text / Markdown up
-to 25 MB; raw files land in R2 under
+to 25 MB; raw files land in Vercel Blob under
 `tenants/{tenantId}/collections/{collectionId}/documents/{documentId}/{filename}`.
-
-**Implemented — query pipeline (Feature 3):**
-
-| Piece | Location |
-| --- | --- |
-| Query route (`POST /v1/collections/:id/query`, SSE + JSON) | [`apps/api/src/routes/query.ts`](apps/api/src/routes/query.ts) |
-| Retrieval (embed query + tenant-filtered vector search) | [`apps/api/src/services/retrieval.ts`](apps/api/src/services/retrieval.ts) |
-| Context assembly (threshold, dedupe, token budget, ordering) | [`apps/api/src/services/context.ts`](apps/api/src/services/context.ts) |
-| Citation resolution (map + validate `[n]` markers) | [`apps/api/src/services/citations.ts`](apps/api/src/services/citations.ts) |
-| LLM provider (Workers AI, Llama 3.3, streaming) | [`apps/api/src/services/llm.ts`](apps/api/src/services/llm.ts) |
-| System prompt | [`apps/api/src/prompts.ts`](apps/api/src/prompts.ts) |
-| Token counter (BPE, for the context budget) | [`apps/api/src/lib/tokens.ts`](apps/api/src/lib/tokens.ts) |
-| Playground UI (streamed answer + clickable citations) | [`apps/web/src/app/dashboard/collections/playground/`](apps/web/src/app/dashboard/collections/playground/) |
-
-**Implemented — API keys & rate limiting (Feature 4):**
-
-| Piece | Location |
-| --- | --- |
-| Unified auth middleware (session **or** API key) | [`apps/api/src/lib/auth.ts`](apps/api/src/lib/auth.ts) |
-| API-key management API (`/v1/api-keys`, session-only) | [`apps/api/src/routes/apikeys.ts`](apps/api/src/routes/apikeys.ts) |
-| Key generation / hashing / KV cache shape | [`apps/api/src/services/apikeys.ts`](apps/api/src/services/apikeys.ts) |
-| Per-key rate limiter (Durable Object) | [`apps/api/src/durable/ratelimiter.ts`](apps/api/src/durable/ratelimiter.ts) |
-| API-keys dashboard (create-once, list, revoke, curl snippet) | [`apps/web/src/app/dashboard/api-keys/`](apps/web/src/app/dashboard/api-keys/) |
 
 Shared domain types for every feature live in
 [`packages/shared/src/index.ts`](packages/shared/src/index.ts).
+
+### Migrated off Cloudflare
+
+This project previously ran as a Cloudflare Worker. Every Cloudflare primitive
+had to be replaced, and the replacements are not all like-for-like — the
+trade-offs are documented where they bite:
+
+| Was | Now | Note |
+| --- | --- | --- |
+| D1 (SQLite) | **Neon Postgres** + Drizzle | Real window functions and `FILTER` clauses for the analytics SQL |
+| R2 | **Vercel Blob** (private store) | Files are readable only through an authenticated route |
+| Workers AI (bge-m3, Llama 3.3) | **Gemini** (`gemini-embedding-001`, `gemini-2.5-flash`) | Free tier; see [Embeddings](#embeddings-and-re-ingestion) |
+| Queues + Workflows | **`after()`** background execution | No durable resume — see [Ingestion](#ingestion-pipeline-feature-2) |
+| Durable Object rate limiter | **Postgres advisory-lock window** | Still atomic per key — see [Rate limiting](#rate-limiting-feature-4) |
+| KV (API-key cache) | *removed* | Revocation is now immediate — see [Authentication](#authentication-session-or-api-key) |
+| Analytics Engine dual-write | *removed* | It was write-only from a Worker; Postgres is both writable and readable |
+| Cron triggers | **Vercel Cron** | [`vercel.json`](apps/web/vercel.json) |
+| Static export → static host | **SSR on Vercel** | One deployable instead of two |
+
+Pinecone is the only external dependency that carried over unchanged.
 
 ## Prerequisites
 
 - **Node.js ≥ 20** (developed on Node 24)
 - **pnpm 9** (`corepack enable` then `corepack prepare pnpm@9.15.4 --activate`)
 - A **Clerk** application (for auth) — free tier is fine
-- A **Cloudflare** account with **Wrangler** authenticated (`pnpm dlx wrangler login`) to deploy the API worker
-- Any **static host** (S3+CloudFront, Cloudflare Pages, nginx, ...) for the web app
-- A **Pinecone** account (serverless index; free tier is fine) — required for ingestion (Feature 2)
+- A **Vercel** account (Hobby is enough; see the note on `maxDuration` below)
+- A **Neon** Postgres database — free tier is fine
+- A **Google AI Studio** API key — free, no billing required
+- A **Pinecone** account (serverless index; free tier is fine)
 
 ## Install
 
@@ -123,127 +116,170 @@ pnpm install
 
 ## Environment setup
 
-Each app owns its env file — there is no root `.env`. Copy the example next to
-it and fill in real values. Never commit real secrets.
+All configuration lives in one place — copy the example and fill it in:
 
 ```bash
-cp apps/web/.env.example apps/web/.env.local     # web: build-time public vars
-cp apps/api/.dev.vars.example apps/api/.dev.vars # api: local dev secrets
+cp apps/web/.env.example apps/web/.env.local
 ```
 
-- **Web** ([`apps/web/.env.example`](apps/web/.env.example)) — `NEXT_PUBLIC_*`
-  vars only, baked into the static bundle at build time and public by design.
-  Required: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `NEXT_PUBLIC_API_URL`. There is
-  **no** `CLERK_SECRET_KEY` — the web app never runs server-side code, so it
-  only ever needs the publishable key.
-- **API** ([`apps/api/.dev.vars.example`](apps/api/.dev.vars.example)) — secrets
-  for local `wrangler dev`; in production set them with
-  `wrangler secret put <NAME>`. Required: `CLERK_ISSUER` (your Clerk Frontend
-  API URL), `CLERK_AUTHORIZED_PARTY` (the web app's origin(s), comma-separated)
-  and `PINECONE_API_KEY` (ingestion). **Session auth fails closed without
-  `CLERK_AUTHORIZED_PARTY`**: `iss` only proves a token came from your Clerk
-  instance — every origin that instance authorizes shares it — so the `azp`
-  claim is what pins the token to *your* frontend, and it is not optional.
-- **API plain vars** ([`apps/api/wrangler.jsonc`](apps/api/wrangler.jsonc)
-  `vars`) — `WEB_ORIGIN`: origin(s) of the web SPA allowed by CORS,
-  comma-separated (default `http://localhost:3000`); `PINECONE_INDEX` /
-  `PINECONE_INDEX_HOST`: the Pinecone index name and its data-plane host (see
-  [Pinecone setup](#pinecone-setup)). Set your deployed web origin here (or in
-  a Wrangler environment) before deploying the API.
-- **Deploys** need no env file: Wrangler authenticates via
-  `pnpm dlx wrangler login` (or a `CLOUDFLARE_API_TOKEN` shell variable in CI).
+`NEXT_PUBLIC_*` variables are baked into the browser bundle and are public by
+design. Everything else is server-only, read at request time inside route
+handlers. On Vercel, set them all under *Project → Settings → Environment
+Variables*.
+
+Required:
+
+| Variable | What it is |
+| --- | --- |
+| `DATABASE_URL` | Neon **pooled** connection string |
+| `CLERK_ISSUER` | Your Clerk Frontend API URL |
+| `CLERK_AUTHORIZED_PARTY` | Your app's origin(s), comma-separated |
+| `GEMINI_API_KEY` | From [Google AI Studio](https://aistudio.google.com/apikey) |
+| `PINECONE_API_KEY` / `PINECONE_INDEX` / `PINECONE_INDEX_HOST` | See [Pinecone setup](#pinecone-setup) |
+| `BLOB_READ_WRITE_TOKEN` | Set automatically when you add a Blob store |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key |
+| `CRON_SECRET` | Shared secret for the retention cron |
+
+**`CLERK_AUTHORIZED_PARTY` is not optional.** `iss` only proves a token came
+from your Clerk instance — every origin that instance authorizes shares it — so
+the `azp` claim is what pins the token to *your* frontend. Session auth fails
+closed when it is unset.
 
 > Without a real `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` the app still **builds** (a
 > format-valid placeholder is used so prerender succeeds), but the sign-in flow
 > and `/dashboard` gating only work once real Clerk keys are set.
 
+### Database setup
+
+Create a Neon project, copy the **pooled** connection string into
+`DATABASE_URL`, then apply the schema:
+
+```bash
+pnpm db:migrate
+```
+
+Schema changes are made in
+[`apps/web/src/server/db/schema.ts`](apps/web/src/server/db/schema.ts);
+regenerate SQL with `pnpm db:generate` (drizzle-kit) and re-apply with
+`pnpm db:migrate`.
+
+The app talks to Neon over its **serverless HTTP driver**: each query is a
+stateless fetch, so there is no connection to keep alive between invocations and
+no pool to exhaust when Vercel scales out. The trade-off is no interactive
+transactions — nothing here needs one, and the single place that wants atomicity
+(the rate limiter) gets it from a per-key advisory lock inside one statement.
+
+### Blob storage setup
+
+In the Vercel dashboard: *Storage → Create → Blob*, and set access to
+**Private**. This matters: these are tenants' uploaded documents, and a public
+store would make every one of them readable by anyone holding the URL. With a
+private store, files are reachable only through
+`GET /api/v1/documents/:id/raw`, which authenticates and tenant-scopes first.
+
 ### Pinecone setup
 
-Ingestion embeds with **`@cf/baai/bge-m3`** (Workers AI), which produces
-**1024-dimensional** dense vectors — the Pinecone index **must** be created
-with that dimension and the **cosine** metric (the pipeline verifies this at
-run time and fails with a clear error on mismatch):
+Ingestion embeds with **`gemini-embedding-001`** at **1024 dimensions**, so the
+Pinecone index must be created with that dimension and the **cosine** metric
+(the pipeline verifies this at run time and fails with a clear error on
+mismatch):
 
 1. In the [Pinecone console](https://app.pinecone.io/) create a **serverless**
-   index, e.g. `rag-index`, with **dimension `1024`** and **metric `cosine`**
-   (any cloud/region).
-2. Copy the index **host** shown on the index page (looks like
-   `rag-index-abc1234.svc.aped-1234-a56b.pinecone.io`) into the
-   `PINECONE_INDEX_HOST` var (`wrangler.jsonc` for deploys, `.dev.vars` for
-   local dev) and the index name into `PINECONE_INDEX`.
-3. Create an API key and set it as a secret:
-   `pnpm dlx wrangler secret put PINECONE_API_KEY` (local dev: `.dev.vars`).
+   index, e.g. `rag-index`, with **dimension `1024`** and **metric `cosine`**.
+2. Copy the index **host** from the index page into `PINECONE_INDEX_HOST` and
+   the index name into `PINECONE_INDEX`.
+3. Create an API key and set it as `PINECONE_API_KEY`.
 
-The Worker talks to Pinecone's data-plane REST API directly (no SDK), so
-nothing else needs installing.
+The app talks to Pinecone's data-plane REST API directly (no SDK), so nothing
+else needs installing.
+
+### Embeddings and re-ingestion
+
+Embeddings moved from Workers AI's `@cf/baai/bge-m3` to Gemini. **Vectors from
+the old model are not comparable to the new ones** — different models produce
+different vector spaces even at the same dimension — so any documents ingested
+before the migration must be re-ingested (dashboard → **Reprocess**, or
+`POST /api/v1/documents/:id/reingest`). Vector ids are deterministic, so a
+re-run overwrites in place rather than duplicating.
+
+The index dimension itself did **not** have to change. `gemini-embedding-001` is
+trained with Matryoshka representation learning, so a truncated prefix of its
+native 3072-dim output is still a valid embedding; requesting
+`outputDimensionality: 1024` is what let the existing index be reused as-is.
+Truncated vectors are re-normalized to unit length before they are stored.
+
+Gemini also embeds **asymmetrically**: passages are encoded with
+`RETRIEVAL_DOCUMENT` and questions with `RETRIEVAL_QUERY`. This is a real
+improvement over the previous symmetric model, and it is why the
+`EmbeddingProvider` seam now takes a task argument.
 
 ## Ingestion pipeline (Feature 2)
 
-Uploading a document returns immediately with `status: "uploaded"` and kicks
-off asynchronous ingestion:
+Uploading a document returns immediately with `status: "uploaded"` and kicks off
+ingestion in the background:
 
 ```
-POST /v1/collections/:id/documents
-   └─ enqueue → INGEST_QUEUE → queue consumer → IngestWorkflow instance
-        1. mark processing         (D1: status = processing)
-        2. extract text            (R2 → unpdf for PDF, decode for txt/md;
+POST /api/v1/collections/:id/documents
+   └─ after() → runIngestion()
+        1. mark processing         (status = processing, record run id)
+        2. extract text            (Blob → unpdf for PDF, decode for txt/md;
                                     keeps page numbers for later citations)
         3. chunk text              (recursive character splitting w/ overlap)
         4. verify index dimension  (embedding dim must match Pinecone index)
-        5. embed + upsert batches  (Workers AI bge-m3, ≤100 inputs/request →
+        5. embed + upsert batches  (Gemini ≤100 inputs/request →
                                     Pinecone upserts ≤150 vectors & <2 MB/request)
-        6. finalize                (D1: status = ready + chunk count)
-      on any failure → D1: status = error + readable message
+        6. finalize                (status = ready + chunk count)
+      on any failure → status = error + readable message
 ```
 
 Design notes:
 
-- **Durable & retryable** — each phase is a Cloudflare Workflows `step.do`
-  with exponential-backoff retries; a transient failure (network, 429, 5xx)
-  resumes from the failed step. Deterministic failures (unparseable/empty
-  file, provider 4xx, config mismatch) throw `NonRetryableError` and mark the
+- **What replaced the Workflow.** On Cloudflare this ran as a durable Workflow:
+  each phase was a checkpointed `step.do(...)`, so an evicted instance resumed
+  from the last completed step. Vercel has no durable-execution primitive, so
+  the pipeline is a sequential function invoked through
+  [`after()`](https://nextjs.org/docs/app/api-reference/functions/after) — it
+  starts once the upload response is sent and runs inside that same invocation.
+- **Retries are preserved.** Every phase is wrapped in `withRetries` with
+  exponential backoff, so a transient failure (network, 429, 5xx) does not fail
+  the document. Deterministic failures (unparseable/empty file, provider 4xx,
+  config mismatch) throw `PermanentError`, skip retries entirely, and mark the
   document `error` immediately — nothing hangs in `processing`.
-- **Queue as trigger** — the upload route only enqueues (uploads stay fast);
-  the queue consumer starts one Workflow instance per message and gets its own
-  retries + dead-letter queue (`ingest-queue-dlq`).
+- **Resumption is not preserved.** A run killed by the function timeout leaves
+  the document in `processing`. `reingest` is the recovery path, and it accepts
+  a document that has been `processing` for more than 15 minutes rather than
+  refusing with a 409 forever.
+- **`maxDuration`.** The upload route budgets 300s (the Vercel Pro/Fluid
+  ceiling). On Hobby the platform caps it lower (60s), which is enough for
+  typical documents but can time out on a very large PDF.
+- **Free-tier pacing.** Gemini's free tier caps requests per minute, so batches
+  are spaced by `EMBED_BATCH_DELAY_MS` (default 1s). Set it to 0 on a paid key.
 - **Idempotent** — vector ids are deterministic (`{documentId}#{chunkIndex}`),
   so re-running ingestion overwrites vectors instead of duplicating them.
 - **Tenant isolation** — vectors live in a per-tenant+collection namespace
-  (`t_{tenantId}__c_{collectionId}`, built by `vectorNamespace()` in
-  [`vectorstore.ts`](apps/api/src/services/vectorstore.ts)). Each vector
+  (`t_{tenantId}__c_{collectionId}`, built by `vectorNamespace()`). Each vector
   carries `tenantId`, `collectionId`, `documentId`, `chunkIndex`, `page`,
   `filename` and the chunk text as metadata.
-- **Dense-only vectors** — the Workers AI bge-m3 binding exposes dense
-  embeddings only (no sparse/lexical weights), so hybrid search is deferred
-  (`// TODO (Feature 3)` in
-  [`embeddings.ts`](apps/api/src/services/embeddings.ts)).
-- **Tuning** — chunk size/overlap, batch sizes and the embedding model live in
-  [`apps/api/src/config.ts`](apps/api/src/config.ts). After changing them, hit
-  **Reprocess** in the dashboard (or `POST /v1/documents/:id/reingest`) to
-  re-run ingestion for a document.
-- **Status** — `GET /v1/documents/:id/status` returns
-  `{ status, chunkCount?, error?, updatedAt }`; the dashboard polls it while
-  any document is processing and shows chunk counts / error messages inline.
-- **Deletes clean up vectors** — deleting a document removes its vectors (by
-  id prefix) and its R2 folder; deleting a collection removes the whole
-  Pinecone namespace and R2 prefix.
-
-Local dev: Queues, Workflows, D1 and R2 are all emulated by `wrangler dev`,
-but **Workers AI always calls the real API** (inference isn't emulated), so
-embedding runs incur normal Workers AI usage and need an authenticated
-Wrangler session. Pinecone is likewise a real remote index even in dev.
+- **Deletes are made safe without termination.** There is no instance handle to
+  terminate a running ingestion, so instead its final writes are scoped to the
+  run's own `ingestion_run_id` *and* the document row. If the document is
+  deleted (or a newer run claims it) mid-flight, those updates match nothing and
+  the run ends as a silent no-op rather than resurrecting a deleted row.
+- **Status** — `GET /api/v1/documents/:id/status` returns
+  `{ status, chunkCount?, error?, updatedAt }`; the dashboard polls it while any
+  document is processing.
+- **Deletes clean up vectors** — deleting a document removes its vectors (by id
+  prefix) and its blob folder; deleting a collection removes the whole Pinecone
+  namespace and blob prefix.
 
 ## Query pipeline (Feature 3)
 
-Ask a question against a collection and get a streamed, grounded answer with
-citations:
-
 ```
-POST /v1/collections/:id/query        body: { query, topK?, stream? }
-   1. embed query        (Workers AI bge-m3 — the SAME model as ingestion)
+POST /api/v1/collections/:id/query    body: { query, topK?, stream? }
+   1. embed query        (Gemini, RETRIEVAL_QUERY task)
    2. retrieve top-k     (Pinecone: tenant+collection namespace + tenantId filter)
    3. assemble context   (threshold → dedupe → token budget → reorder → label [n])
-   4. generate           (Workers AI Llama 3.3, streamed, grounded system prompt)
+   4. generate           (Gemini 2.5 Flash, streamed, grounded system prompt)
    5. resolve citations  (map emitted [n] markers → real chunks; drop hallucinated)
 ```
 
@@ -255,10 +291,10 @@ orchestrates and shapes the response — no SDK calls in the handler.
 
 - **Streaming (default)** — Server-Sent Events; each `data:` line is one JSON
   `QueryStreamEvent`: zero+ `delta` (answer text) → one `sources` (citations +
-  usage) → one `done` (or an in-band `error`). The Playground consumes this so
-  tokens appear progressively and citations render when generation completes.
-- **`stream: false`** — a single JSON `{ answer, sources, usage }`, easy to
-  call from curl and to evaluate offline:
+  usage) → one `done` (or an in-band `error`). The route sets
+  `X-Accel-Buffering: no` so Vercel's proxy does not buffer the stream and
+  deliver every token at once when generation finishes.
+- **`stream: false`** — a single JSON `{ answer, sources, usage }`:
 
   ```bash
   curl -X POST "$API/v1/collections/$ID/query" \
@@ -266,73 +302,69 @@ orchestrates and shapes the response — no SDK calls in the handler.
     -d '{"query":"What is the refund policy?","stream":false}'
   ```
 
-**Model.** Generation uses **`@cf/meta/llama-3.3-70b-instruct-fp8-fast`**
-(Workers AI, free-tier, instruction-tuned open weights) behind the `LlmProvider`
-seam in [`llm.ts`](apps/api/src/services/llm.ts) — swap the class (or just
-`GENERATION_MODEL`) to move generation elsewhere (e.g. Gemini) without touching
-the pipeline. Query embedding **must** use the ingestion model
-(`@cf/baai/bge-m3`); BGE-M3 is symmetric and needs no query prefix, so the raw
-question is embedded as-is.
+**Model.** Generation uses **`gemini-2.5-flash`** behind the `LlmProvider` seam
+in [`llm.ts`](apps/web/src/server/services/llm.ts) — swap the class (or just
+`GENERATION_MODEL`) to move generation elsewhere without touching the pipeline.
+`thinkingBudget` is set to **0**: grounded extraction from supplied passages
+needs no chain of thought, and thinking tokens cost quota and delay the first
+streamed token.
 
-**Grounding & citations.** The [system prompt](apps/api/src/prompts.ts) instructs
-the model to answer **only** from the numbered context passages, cite with the
-given `[n]` markers, and reply *"I could not find an answer to this in the
-provided documents."* when the context doesn't cover the question — so an
-unanswerable query returns an explicit non-answer, not a fabrication. After
+**Grounding & citations.** The [system prompt](apps/web/src/server/prompts.ts)
+instructs the model to answer **only** from the numbered context passages, cite
+with the given `[n]` markers, and reply *"I could not find an answer to this in
+the provided documents."* when the context doesn't cover the question. After
 generation, every emitted `[n]` marker is validated against the real retrieved
 chunks; markers with no matching chunk are dropped and reported in
-`usage.invalidMarkers` (the UI flags them). Returned `sources` carry
-`documentId`, `filename`, `page`, `chunkIndex`, `snippet`, `score` and whether
-the answer actually `cited` them.
+`usage.invalidMarkers` (the UI flags them).
 
 **Lost-in-the-middle.** LLMs attend most reliably to the **start and end** of a
 long context, so `orderForContextWindow()` in
-[`context.ts`](apps/api/src/services/context.ts) places the highest-scoring
-chunks at both ends and buries the weakest in the middle. Citation markers are
-assigned by relevance rank *before* reordering, so marker numbers stay
-meaningful regardless of prompt position.
+[`context.ts`](apps/web/src/server/services/context.ts) places the
+highest-scoring chunks at both ends and buries the weakest in the middle.
+Citation markers are assigned by relevance rank *before* reordering, so marker
+numbers stay meaningful regardless of prompt position.
 
 **Tenant isolation.** Retrieval runs inside the per-tenant+collection namespace
-built by `vectorNamespace()` (the only namespace constructor in the codebase)
-**and** applies a `tenantId` metadata filter as defense-in-depth — a
-namespace-construction bug still can't surface another tenant's vectors. The
-collection itself is loaded tenant-scoped, so a second user querying the first
-user's collection id gets a **404**.
+built by `vectorNamespace()` **and** applies a `tenantId` metadata filter as
+defense-in-depth — a namespace-construction bug still can't surface another
+tenant's vectors. The collection itself is loaded tenant-scoped, so a second
+user querying the first user's collection id gets a **404**.
 
-**Hybrid search: not enabled — dense-only.** The Workers AI bge-m3 binding
-returns dense embeddings only (`{ data: number[][] }`); it does not expose the
-model's sparse/lexical weights, so no sparse vectors were stored at ingestion
-and there is nothing to fuse. The dense path lives behind the same
-`VectorStore` seam with a clearly-marked `// TODO: hybrid search` in
-[`retrieval.ts`](apps/api/src/services/retrieval.ts) for when sparse vectors
-become available (Pinecone native sparse-dense, or manual RRF).
+**Hybrid search: not enabled — dense-only.** Gemini's embedding API returns
+dense vectors only, so no sparse/lexical weights were stored at ingestion and
+there is nothing to fuse. The dense path lives behind the `VectorStore` seam
+with a marked `// TODO: hybrid search` in
+[`retrieval.ts`](apps/web/src/server/services/retrieval.ts).
 
 **Tuning retrieval.** Every knob lives in
-[`apps/api/src/config.ts`](apps/api/src/config.ts) and takes effect immediately
-(no re-ingestion needed):
+[`apps/web/src/server/config.ts`](apps/web/src/server/config.ts) and takes
+effect immediately (no re-ingestion needed):
 
 | Constant | Default | Effect |
 | --- | --- | --- |
 | `TOP_K` | `8` | Chunks fetched from the vector store per query |
 | `MAX_TOP_K` | `20` | Hard cap on a client-supplied `topK` |
-| `SIMILARITY_THRESHOLD` | `0.35` | Min cosine score to enter the context (raise = stricter grounding / more "not found") |
+| `SIMILARITY_THRESHOLD` | `0.45` | Min cosine score to enter the context (raise = stricter grounding / more "not found") |
 | `NEAR_DUPLICATE_JACCARD` | `0.85` | Word-trigram similarity above which chunks are deduplicated |
 | `CONTEXT_TOKEN_BUDGET` | `4000` | Max context tokens (BPE-counted); lowest-scoring chunks dropped first |
 | `MAX_QUERY_LENGTH` | `2000` | Reject longer questions with 400 |
-| `GENERATION_MODEL` / `GENERATION_MAX_TOKENS` / `GENERATION_TEMPERATURE` | Llama 3.3 / `1024` / `0.1` | Generation model + decoding |
+| `GENERATION_MODEL` / `GENERATION_MAX_TOKENS` / `GENERATION_TEMPERATURE` | Gemini 2.5 Flash / `1024` / `0.1` | Generation model + decoding |
+
+`SIMILARITY_THRESHOLD` was raised from 0.35 to 0.45 with the model change:
+Gemini's cosine scores sit higher than BGE-M3's for both relevant and irrelevant
+text, so the old threshold would have let noise through.
 
 **Edge cases.** Empty query → **400**; collection with no `ready` documents →
 **409** (friendly "ingest a document first" — never a hallucinated answer);
 nothing clears `SIMILARITY_THRESHOLD` → **422** ("no relevant content found").
 
 **Re-ranking** (out of scope) has a marked insertion point between retrieval and
-context assembly (`// TODO (next): re-ranking` in both `query.ts` and
-`context.ts`).
+context assembly (`// TODO (next): re-ranking`).
 
 ## Authentication (session or API key)
 
-Every protected endpoint runs through one unified middleware
-([`apps/api/src/lib/auth.ts`](apps/api/src/lib/auth.ts)) that accepts **two**
+Every protected endpoint runs through one unified module
+([`server/lib/auth.ts`](apps/web/src/server/lib/auth.ts)) that accepts **two**
 credential types, both resolving to the same context
 (`{ tenantId, authType, userId?, keyId? }`) so all downstream tenant-scoping is
 identical:
@@ -359,15 +391,17 @@ through to Clerk verification.
 | `GET /v1/collections/:id/documents` | ✓ | ✓ |
 | `GET /v1/documents/:id`, `.../status`, `.../raw` | ✓ | ✓ |
 | `POST /v1/documents/:id/reingest`, `DELETE …` | ✓ | ✓ |
-| `POST/GET/DELETE /v1/collections`, `DELETE /v1/collections/:id` | ✓ | ✓ |
+| `POST/DELETE /v1/collections`, `DELETE /v1/collections/:id` | ✓ | ✓ |
 | **`POST/GET/DELETE /v1/api-keys`** (key management) | ✓ | ✗ **401** |
+| **`GET /v1/analytics/*`** | ✓ | ✗ **401** |
 
 API keys are **full-access for their tenant** (no scopes yet — see
-`// TODO: scopes` in [`apikeys.ts`](apps/api/src/services/apikeys.ts)) with one
-deliberate exception: **API keys can never manage API keys.** Key management is
+`// TODO: scopes` in
+[`apikeys.ts`](apps/web/src/server/services/apikeys.ts)) with one deliberate
+exception: **API keys can never manage API keys.** Key management is
 session-only (`requireSession` rejects any `rag_live_` credential with 401), so
-a leaked key cannot mint or revoke keys. Tenant isolation is unchanged under
-key auth: a key from tenant A querying tenant B's collection id gets a **404**.
+a leaked key cannot mint or revoke keys. Tenant isolation is unchanged under key
+auth: a key from tenant A querying tenant B's collection id gets a **404**.
 
 ### API key management (`/v1/api-keys`, session-only)
 
@@ -375,26 +409,22 @@ key auth: a key from tenant A querying tenant B's collection id gets a **404**.
 | --- | --- | --- |
 | `POST` | `/v1/api-keys` | Body `{ name, rateLimitPerMinute? }` → **201** with the **plaintext key** (only time it is ever returned) + metadata |
 | `GET` | `/v1/api-keys` | List the tenant's keys — prefix + last-4 only, never key material |
-| `DELETE` | `/v1/api-keys/:id` | Revoke (soft delete): set `revoked_at`, purge the KV cache; the key fails auth immediately (see revocation note below) |
+| `DELETE` | `/v1/api-keys/:id` | Revoke (soft delete): set `revoked_at`; the key fails auth immediately |
 
 **Key security.** Keys are `rag_live_` + 32 bytes of `crypto.getRandomValues`
 (base64url). The **plaintext is never stored** — only its SHA-256 hash (unique,
-indexed). D1 keeps a display `key_prefix` + `last4` for the UI. A KV entry keyed
-by the hash (`{ keyId, tenantId, revoked, rateLimitPerMinute }`) serves the
-read-optimized auth fast path; on a KV miss (cold cache / eventual consistency)
-auth falls back to D1, the source of truth, and repopulates KV.
+indexed). Postgres keeps a display `key_prefix` + `last4` for the UI.
 
-**Revocation.** Revoking writes `revoked_at` in D1 *and* purges the KV entry, so
-the key stops authenticating right away. Because the fast path short-circuits on
-a KV hit and never reads D1, that purge is the only thing standing between a
-revoked key and continued access — and it is best-effort (the revoke still
-returns 204 if KV errors). Every cache entry therefore carries an
-`expirationTtl` (`API_KEY_CACHE_TTL_SECONDS`, default 300s) as a backstop: in
-the worst case a failed purge delays revocation by that TTL, after which the
-entry expires, auth falls back to D1, and the key is rejected. It can never
-outlive the TTL. `last_used_at`
-is refreshed fire-and-forget via `ctx.waitUntil`, throttled to at most once per
-key per minute so it never adds latency or hammers D1.
+**Revocation is immediate.** The Cloudflare version kept a KV cache in front of
+the key lookup, which made revocation *eventually* consistent: a revoked key
+stayed valid until the cache entry was purged (best-effort) or its TTL expired.
+That cache is gone. Nothing on Vercel offers a shared cache this app already
+pays for, and a per-instance one would be strictly worse — unpurgeable from
+another instance. Since an API-key request already touches Postgres for the
+rate-limit check, folding the key lookup into the same database costs one extra
+indexed read and buys revocation with no window at all. `last_used_at` is
+refreshed fire-and-forget via `after()`, throttled to at most once per key per
+minute so it never adds latency.
 
 ```bash
 # Create a key (from the dashboard, or with a Clerk session JWT):
@@ -413,49 +443,53 @@ An invalid, malformed, or revoked key returns **401**.
 
 ## Rate limiting (Feature 4)
 
-**Mechanism: a Durable Object** ([`ratelimiter.ts`](apps/api/src/durable/ratelimiter.ts)),
-one instance per API key (`getByName("key:{keyId}")`). Chosen deliberately:
+**Mechanism: Postgres, with a per-key advisory lock**
+([`ratelimit.ts`](apps/web/src/server/services/ratelimit.ts)).
 
-- **Not KV** — KV is eventually consistent with per-key write limits, so a
-  counter there would be inaccurate and bypassable across concurrent requests
-  and colos (the spec's explicit non-goal).
-- **Not the native rate-limiting binding** — its `limit`/`period` are fixed in
-  `wrangler.jsonc` and it returns only `{ success }`, so it can't honor a
-  **per-key** `rate_limit_per_minute` override or expose the exact
-  remaining/reset needed for `RateLimit-*` headers.
+The Cloudflare version used a Durable Object, whose single-threaded-per-instance
+execution gave true atomic increments. There is no equivalent primitive on
+Vercel: functions are stateless and scale horizontally, so any in-process
+counter is per-instance and trivially bypassed by landing on a different one.
+The limiter has to live in shared storage, and Postgres is both the only shared
+store this app already has and the only one that can make the check atomic.
 
-A DO is single-threaded per instance, giving **true atomic** increments, plus
-per-key limits and precise header math.
+Neon's HTTP driver has no interactive transactions, so a read-then-write would
+race — two concurrent requests could both read `n = limit - 1` and both admit.
+Instead the whole check runs as **one statement** whose first CTE takes a
+transaction-scoped advisory lock keyed on the API key. Every request for a given
+key serializes on that lock, exactly as it did on one DO instance, while
+different keys never contend.
 
-**Algorithm: sliding-window log.** We keep the timestamps of allowed hits in the
-trailing 60s window. A naive *fixed* window lets a caller fire a full quota at
-the end of one window and again at the start of the next (~2× burst at the
-boundary); the sliding window moves continuously with `now`, so the limit holds
-across every 60s span. State is in-memory (a rate counter needs no durability —
-eviction just resets the window, at worst momentarily lenient), keeping the hot
-path free of storage writes.
+**Algorithm: sliding-window log.** `rate_limits.hits` keeps the timestamps of
+allowed hits in the trailing 60s window. A naive *fixed* window lets a caller
+fire a full quota at the end of one window and again at the start of the next
+(~2× burst at the boundary); the sliding window moves continuously with `now`,
+so the limit holds across every 60s span. Rejected requests are not recorded, so
+being throttled never extends the penalty. Idle rows are swept by the daily
+cron.
 
 **Behavior:**
 
 - Limit is **per key, per minute** — `DEFAULT_RATE_LIMIT_PER_MINUTE` (60),
   overridable per key via `rate_limit_per_minute`.
-- Runs in the auth middleware **before** any expensive work, so a throttled
-  request never reaches embedding/retrieval/generation.
+- Runs during auth, **before** any expensive work, so a throttled request never
+  reaches embedding/retrieval/generation.
 - Every API-key response carries `RateLimit-Limit`, `RateLimit-Remaining`,
   `RateLimit-Reset` (seconds). A rejection returns **429** with `Retry-After`
   and a JSON body `{ error, retryAfter, limit }`.
 - **Session (dashboard) traffic is not rate-limited** — it is Clerk-gated,
   interactive and low-volume; the surface being protected is programmatic
-  API-key traffic. (Flip this by adding a session branch to the limiter.)
+  API-key traffic.
 
-Tunables in [`config.ts`](apps/api/src/config.ts): `DEFAULT_RATE_LIMIT_PER_MINUTE`,
-`MAX_RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_WINDOW_MS`, `LAST_USED_THROTTLE_MS`,
+Tunables in [`config.ts`](apps/web/src/server/config.ts):
+`DEFAULT_RATE_LIMIT_PER_MINUTE`, `MAX_RATE_LIMIT_PER_MINUTE`,
+`RATE_LIMIT_WINDOW_MS`, `LAST_USED_THROTTLE_MS`, `RATE_LIMIT_ROW_TTL_MS`,
 `API_KEY_PREFIX`, `API_KEY_RANDOM_BYTES`.
 
 ## Usage analytics (Feature 5)
 
-Every query and ingestion is recorded as a row in the D1 `usage_events` table
-and surfaced on a dashboard at **`/dashboard/analytics`** (KPI cards with
+Every query and ingestion is recorded as a row in the `usage_events` table and
+surfaced on a dashboard at **`/dashboard/analytics`** (KPI cards with
 period-over-period deltas + sparklines, a stacked queries-over-time chart with a
 p95 latency line, latency-by-stage and by-collection breakdowns, an outcome
 donut, token/cost over time, ingestion stats, and a paginated drill-down table
@@ -464,312 +498,202 @@ with a per-event detail sheet).
 **What's tracked.** For **queries**: per-stage latency (embedding / retrieval /
 generation) and total, chunks retrieved, top similarity score, prompt/completion
 tokens, estimated cost, auth type, collection, and outcome — including the
-`no_results` (nothing relevant retrieved), `error` (pipeline failure), and
-`rate_limited` (429) cases, not just successes. For **ingestion**: duration,
-chunk count, bytes processed, and success/failure. See the
-[`usage_events` schema](apps/api/src/db/schema.ts) and the
-[`UsageEvent` type](packages/shared/src/index.ts).
+`no_results`, `error`, and `rate_limited` cases, not just successes. For
+**ingestion**: duration, chunk count, bytes processed, and success/failure.
 
 **Writes are off the critical path.** A user request must never be slowed or
-failed by analytics, so every write goes through `ctx.waitUntil(...)` (never
-awaited before responding) and the recorder swallows its own errors (logs
-only). Token counting and cost estimation also run *inside* the deferred
-closure, so instrumentation adds no latency. Deliberately breaking the analytics
-write has zero effect on the query response. The instrumentation lives in the
-[query route](apps/api/src/routes/query.ts), the
-[auth middleware](apps/api/src/lib/auth.ts) (429s), and the
-[ingest workflow](apps/api/src/workflows/ingest.ts).
+failed by analytics, so every write goes through `after(...)` (never awaited
+before responding) and the recorder swallows its own errors (logs only). Token
+counting and cost estimation also run *inside* the deferred closure, so
+instrumentation adds no latency.
 
-**Why D1 now, Analytics Engine at scale.** At portfolio scale, D1 is the
-pragmatic primary store: SQL aggregation (`GROUP BY`, window-function
-percentiles) keeps the dashboard queries simple and, crucially, **readable back
-from the Worker**. At high write volume D1's single-writer model becomes a
-bottleneck — that's where **Workers Analytics Engine** is the right answer:
-`writeDataPoint` is unbounded, fire-and-forget, and effectively free. Events are
-therefore **dual-written** to Analytics Engine (binding `USAGE_ANALYTICS`)
-behind the swappable [`AnalyticsRecorder`](apps/api/src/services/analytics.ts)
-interface. The catch (verified against the current docs): Analytics Engine is
-**write-only from a Worker** — reading it back needs the account-level SQL API
-and a token — so the dashboard still reads D1, and the dual-write is *additive*,
-not a replacement, at this scale.
+**Storage.** Postgres is the primary — and now only — store. The Cloudflare
+version dual-wrote to Workers Analytics Engine for write volume, but that
+backend is **write-only from a Worker** (reading it back needs the account SQL
+API), so the dashboard read D1 anyway and the dual-write was additive rather
+than a replacement. Postgres is both writable and readable from the same
+runtime, and its window functions and `FILTER` clauses make the aggregations
+simpler than the SQLite originals. If write volume ever outgrows a single
+Postgres writer, a column-store recorder slots in behind
+`CompositeAnalyticsRecorder` without touching a call site.
 
 **Privacy — raw query text is not stored by default.** We keep a SHA-256 hash of
 the query plus its length (enough to spot duplicate/abusive queries) but **not
 the text**. Plaintext storage is gated behind the `STORE_RAW_QUERY_TEXT` flag in
-[`config.ts`](apps/api/src/config.ts), which defaults to **`false`**; the
+[`config.ts`](apps/web/src/server/config.ts), which defaults to **`false`**; the
 event-detail sheet says so explicitly when text is absent. No chunk contents are
 ever stored.
 
-**Retention.** A daily **cron trigger** (`triggers.crons` in
-[`wrangler.jsonc`](apps/api/wrangler.jsonc), handled by `scheduled` in
-[`index.ts`](apps/api/src/index.ts)) prunes `usage_events` older than
-`ANALYTICS_RETENTION_DAYS` (default **90**). Test the prune locally with
-`wrangler dev --test-scheduled` then
-`curl "http://localhost:8787/__scheduled?cron=0+3+*+*+*"`.
+**Retention.** A daily **Vercel Cron** job (`crons` in
+[`vercel.json`](apps/web/vercel.json), handled by
+[`app/api/cron/prune/route.ts`](apps/web/src/app/api/cron/prune/route.ts))
+prunes `usage_events` older than `ANALYTICS_RETENTION_DAYS` (default **90**) and
+sweeps idle `rate_limits` rows. That endpoint is publicly routable, so it
+authenticates: Vercel sends `Authorization: Bearer $CRON_SECRET`, and the route
+**fails closed** if `CRON_SECRET` is unset — a deploy that forgets it gets 401s
+in the cron log rather than leaving unbounded deletes open to anyone who guesses
+the path.
 
 **API** (session-only — analytics is a dashboard feature, not part of the public
-API; an API key gets a 401): `GET /v1/analytics/{summary,timeseries,breakdown,recent,ingestion}`,
-all tenant-scoped and accepting `from`/`to` (epoch ms or ISO) + optional
+API; an API key gets a 401):
+`GET /v1/analytics/{summary,timeseries,breakdown,recent,ingestion}`, all
+tenant-scoped and accepting `from`/`to` (epoch ms or ISO) + optional
 `collectionId`. Aggregation happens entirely in SQL
-([`analytics-queries.ts`](apps/api/src/services/analytics-queries.ts)); no
-endpoint pulls raw rows to reduce in JS. Percentiles use a single tested helper
-([`percentile.ts`](apps/api/src/lib/percentile.ts) +
-[`percentile.test.ts`](apps/api/src/lib/percentile.test.ts)) whose nearest-rank
-formula is mirrored into the SQL `ROW_NUMBER()` filter.
+([`analytics-queries.ts`](apps/web/src/server/services/analytics-queries.ts));
+no endpoint pulls raw rows to reduce in JS. Percentiles use a single tested
+helper ([`percentile.ts`](apps/web/src/server/lib/percentile.ts) +
+[its tests](apps/web/src/server/lib/percentile.test.ts)) whose nearest-rank
+formula is mirrored into the SQL `ROW_NUMBER()` filter — deliberately *not*
+Postgres's `percentile_disc`, which defines the rank differently and would
+silently shift the numbers the dashboard shows.
 
-Config knobs in [`config.ts`](apps/api/src/config.ts): `ANALYTICS_RETENTION_DAYS`,
-`STORE_RAW_QUERY_TEXT`, `ANALYTICS_DEFAULT_RANGE_DAYS`, `MODEL_COSTS` /
-`DEFAULT_MODEL_COST` (per-model per-token rates for cost estimation — a rough
-*relative* signal, not a billing figure).
+Config knobs in [`config.ts`](apps/web/src/server/config.ts):
+`ANALYTICS_RETENTION_DAYS`, `STORE_RAW_QUERY_TEXT`,
+`ANALYTICS_DEFAULT_RANGE_DAYS`, `MODEL_COSTS` / `DEFAULT_MODEL_COST` (per-model
+per-token rates for cost estimation — the *paid-tier* list prices, since both
+models are free on the free tier; a rough relative signal, not a billing
+figure).
 
 ## API documentation (Feature 6)
 
-The API is self-documenting. Zod schemas in [`packages/shared`](packages/shared/src/schemas)
-are the single source of truth: the TypeScript types both apps use are inferred
-from them, and the **OpenAPI 3.1** spec is generated from the same schemas — so
-the docs, the types, and the validated contract cannot drift.
+The API is self-documenting. Zod schemas in
+[`packages/shared`](packages/shared/src/schemas) are the single source of truth:
+the TypeScript types both halves use are inferred from them, and the **OpenAPI
+3.1** spec is generated from the same schemas — so the docs, the types, and the
+validated contract cannot drift.
 
-- **Machine-readable spec**: `GET /v1/openapi.json` (and `/v1/openapi.yaml`) —
-  public, cached, valid OpenAPI 3.1. Import it into Postman/Insomnia/Swagger
-  Editor, or regenerate/validate locally with `pnpm --filter api gen:openapi`
-  (writes [`apps/web/src/generated/openapi.json`](apps/web/src/generated/openapi.json)
+- **Machine-readable spec**: `GET /api/v1/openapi.json` (and `.yaml`) — public,
+  cached, valid OpenAPI 3.1. Import it into Postman/Insomnia/Swagger Editor, or
+  regenerate/validate locally with `pnpm --filter web gen:openapi` (writes
+  [`apps/web/src/generated/openapi.json`](apps/web/src/generated/openapi.json)
   and fails on an invalid spec). Every operation is tagged, marks which auth
   scheme(s) it accepts (`ApiKeyAuth` / `SessionAuth`), and documents all its
   responses — including `429` with the `RateLimit-*` and `Retry-After` headers.
-- **Hosted docs**: the web app serves a public docs section at
-  [`/docs`](apps/web/src/app/docs) — overview + quickstart, authentication, rate
-  limits, errors, an ingestion guide, and a full **`/docs/reference`** rendered
-  from the spec (per-endpoint schemas, curl/TypeScript/Python samples, and an
-  authenticated "Try it" console). It builds to static HTML with the rest of the
-  site and is readable signed out.
+- **Hosted docs**: a public docs section at [`/docs`](apps/web/src/app/docs) —
+  overview + quickstart, authentication, rate limits, errors, an ingestion
+  guide, and a full **`/docs/reference`** rendered from the spec (per-endpoint
+  schemas, curl/TypeScript/Python samples, and an authenticated "Try it"
+  console). Readable signed out.
 
-The spec is documented via a dedicated registration layer
-([`apps/api/src/openapi`](apps/api/src/openapi)) rather than by swapping the
-runtime routers to `@hono/zod-openapi`'s validating router — that keeps every
-endpoint's request handling (and error bodies) byte-for-byte unchanged while
-still generating the spec from the shared schemas.
+The spec is registered in a dedicated layer
+([`server/openapi`](apps/web/src/server/openapi)) rather than by routing through
+a validating router, which keeps every endpoint's request handling (and error
+bodies) unchanged. The generator is `@asteasolutions/zod-to-openapi` directly;
+the API paths in the spec are relative to the `/api` base carried in its
+`servers` entries.
 
 ## Run in dev
 
-First, apply the D1 migrations to the local (miniflare) database — `wrangler
-dev` emulates D1, R2, Queues and Workflows locally by default. (Workers AI and
-Pinecone are always remote — see
-[Ingestion pipeline](#ingestion-pipeline-feature-2) — so ingestion in dev needs
-an authenticated Wrangler session and the Pinecone vars in `.dev.vars`.)
-
 ```bash
-cd apps/api
-pnpm db:migrate:local     # = wrangler d1 migrations apply rag-db --local
-```
-
-Then run both apps together from the repo root:
-
-```bash
-pnpm dev          # web on http://localhost:3000, api on http://localhost:8787
-```
-
-Or individually:
-
-```bash
-pnpm --filter web dev
-pnpm --filter api dev
+pnpm dev          # app + API on http://localhost:3000
 ```
 
 Quick API check (no auth needed):
 
 ```bash
-curl http://localhost:8787/health          # -> {"status":"ok","version":"0.1.0",...}
-curl http://localhost:8787/me              # -> 401 {"error":"Missing credentials"}
+curl http://localhost:3000/api/health   # -> {"status":"ok","version":"0.2.0",...}
+curl http://localhost:3000/api/me       # -> 401 {"error":"Missing credentials"}
 ```
 
-The rate-limiter Durable Object is emulated by `wrangler dev` locally (no remote
-resource needed); its migration (`tag: v1`) is applied automatically on deploy.
+Unlike the Workers setup, there are no local emulators: `next dev` talks to the
+real Neon database, the real Vercel Blob store, and the real Gemini and Pinecone
+APIs. Point `DATABASE_URL` at a Neon **branch** to keep local work off
+production data.
 
 ## Scripts (root)
 
 | Script | Description |
 | --- | --- |
-| `pnpm dev` | Run web + api dev servers in parallel |
+| `pnpm dev` | Run the app (frontend + API) in dev mode |
 | `pnpm build` | Build every package (types + `next build`) |
+| `pnpm start` | Serve the production build locally |
 | `pnpm typecheck` | `tsc --noEmit` across all packages |
 | `pnpm lint` | Lint all packages |
-| `pnpm deploy:web` | Static-export the web app to `apps/web/out/` for upload |
-| `pnpm deploy:api` | Deploy the API worker |
+| `pnpm test` | Run unit tests |
+| `pnpm db:generate` | Generate SQL migrations from the Drizzle schema |
+| `pnpm db:migrate` | Apply migrations to `DATABASE_URL` |
 
 ## Deploy
 
-The API deploys to **Cloudflare Workers**; the web app is a static bundle that
-goes to any static host.
+Deployment is Vercel's Git integration — connect the repository and it builds
+and deploys every push.
 
-**API worker** — authenticate Wrangler first (`pnpm dlx wrangler login`):
+**Project settings** (Vercel dashboard):
 
-> Most of this is already provisioned — see
-> [Continuous deployment](#continuous-deployment), which deploys these same
-> resources automatically on every push to `main`. The commands below are the
-> manual equivalent / first-time setup.
+| Setting | Value |
+| --- | --- |
+| Framework preset | Next.js |
+| Root directory | `apps/web` |
+| Install command | `pnpm install` (from the repo root; Vercel handles the workspace) |
+| Node.js version | 22.x |
 
-```bash
-# One-time: provision the resources referenced in wrangler.jsonc
-pnpm dlx wrangler kv namespace create RAG_KV     # paste the id into apps/api/wrangler.jsonc
-                                                 # (bound as `KV`; the name here is just the label)
-pnpm dlx wrangler queues create ingest-queue
-pnpm dlx wrangler queues create ingest-queue-dlq
-pnpm dlx wrangler d1 create rag-db               # paste database_id into apps/api/wrangler.jsonc
-pnpm dlx wrangler r2 bucket create rag-raw-docs
-# Apply D1 schema migrations to the remote database (includes the api_keys table)
-cd apps/api && pnpm db:migrate:remote            # = wrangler d1 migrations apply rag-db --remote
-# The RATE_LIMITER Durable Object needs no provisioning — its migration
-# (tag: v1, new_sqlite_classes) is applied automatically by `wrangler deploy`.
-# Secrets
-pnpm dlx wrangler secret put CLERK_ISSUER
-pnpm dlx wrangler secret put CLERK_AUTHORIZED_PARTY   # deployed web origin(s)
-pnpm dlx wrangler secret put PINECONE_API_KEY
-# Vars in wrangler.jsonc: WEB_ORIGIN (deployed web origin), PINECONE_INDEX and
-# PINECONE_INDEX_HOST (see "Pinecone setup" above — dimension 1024, cosine)
+Then:
 
-pnpm deploy:api
-```
+1. **Add the storage.** *Storage → Create → Postgres (Neon)* and *Storage →
+   Create → Blob* with access **Private**. Both set their environment variables
+   on the project automatically (`DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`).
+2. **Set the remaining environment variables** from
+   [`apps/web/.env.example`](apps/web/.env.example) — `CLERK_ISSUER`,
+   `CLERK_AUTHORIZED_PARTY`, `GEMINI_API_KEY`, `PINECONE_*`, `CRON_SECRET`,
+   `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, and `NEXT_PUBLIC_API_URL` /
+   `PUBLIC_API_URL` (your deployed origin + `/api`).
+3. **Apply the migrations**: `DATABASE_URL=… pnpm db:migrate`, or let the
+   [CI workflow](.github/workflows/ci.yml) do it on the next push to `main`.
+4. **Point Clerk at the deployed origin** — add your Vercel URL to the Clerk
+   application's allowed origins, and set `CLERK_AUTHORIZED_PARTY` to the same
+   value, or every session token it issues is rejected by the `azp` check.
 
-Schema changes are made in
-[`apps/api/src/db/schema.ts`](apps/api/src/db/schema.ts); regenerate SQL
-migrations with `pnpm db:generate` (drizzle-kit) and re-apply with
-`pnpm db:migrate:local` / `pnpm db:migrate:remote`.
+The cron job in [`vercel.json`](apps/web/vercel.json) is registered
+automatically on deploy.
 
-**Web app (static export — no server runtime):**
-
-```bash
-pnpm deploy:web   # runs `next build`, producing apps/web/out/
-```
-
-Then upload `apps/web/out/` to whichever static host you use, e.g.:
-
-```bash
-aws s3 sync apps/web/out/ s3://your-bucket --delete   # + a CloudFront invalidation
-# or
-pnpm dlx wrangler pages deploy apps/web/out --project-name rag-web
-```
-
-`trailingSlash: true` means every route is an `index.html` inside its own
-directory, so no host-side rewrite rules are needed. Point `404.html` at the
-host's error page if it supports one. Build-time env vars
-(`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `NEXT_PUBLIC_API_URL`) are baked into the
-bundle, so set them **before** running the build for each environment.
-
-See [`apps/web/README.md`](apps/web/README.md) for the static-export details.
+> **`maxDuration` and the Hobby plan.** The upload and reingest routes declare
+> `maxDuration = 300`. Vercel clamps that to the plan's ceiling — 60s on Hobby.
+> Ingestion of a typical document finishes well inside 60s; a very large PDF may
+> not, and will leave the document in `processing` until it is reprocessed. Pro
+> (or Fluid compute) removes the constraint.
 
 ## Continuous deployment
 
-Every push to `main` deploys via GitHub Actions
-([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)):
+Vercel builds and deploys on every push. GitHub Actions
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) owns the part Vercel
+does not:
 
 ```
-push to main ──► check (typecheck + lint + test)
-                   └─► deploy-api  (D1 migrations ─► wrangler deploy)
-                         └─► deploy-web  (next build ─► wrangler pages deploy)
+push to main ──► check (typecheck + lint + test + build)
+                   └─► migrate (drizzle migrations against production)
+
+pull request ──► check only
 ```
 
-Pull requests run **`check` only** — no deploy. Migrations run *before* the
-worker deploy so new code never meets an older schema; already-applied
-migrations are skipped, so it is safe on every push. `deploy-web` is chained
-after `deploy-api` so the SPA is never newer than the API it calls, and a
-`concurrency` group serializes runs so two deploys can't race.
-
-This targets the **top-level** `wrangler.jsonc` — the existing Worker and
-resources, with no `--env` flag. There is a single environment for now; when a
-production one is split out, add an `env.*` block and remember that **bindings
-are not inherited** by named environments (each must redeclare `vars`,
-`kv_namespaces`, `d1_databases`, `r2_buckets`, `queues`, `durable_objects`,
-`workflows`, `ai`, `analytics_engine_datasets` and `migrations` in full).
-
-### Deployment targets
-
-| Piece | Target |
-| --- | --- |
-| API | Worker `rag-api` |
-| Web | Pages project `rag-web` → https://rag-web-1qn.pages.dev |
-| Metadata | D1 `rag-db` (`23edf493-cbe8-4036-b7d9-d0a4e2d3aa61`) |
-| Auth cache | KV `RAG_KV` |
-| Ingestion | Queues `ingest-queue` / `ingest-queue-dlq` |
-| Raw files | R2 `rag-raw-docs` |
-
-### Before the first run
-
-**1. Enable R2** — R2 is not yet active on the account, so `rag-raw-docs` does
-not exist and every upload/ingestion path will fail until it is. Turn it on at
-*Cloudflare dashboard → R2 → Enable*, then:
-
-```bash
-cd apps/api && pnpm dlx wrangler r2 bucket create rag-raw-docs
-```
-
-**2. Create a scoped Cloudflare API token** at *My Profile → API Tokens →
-Create Token*. Start from the **Edit Cloudflare Workers** template, then add the
-permissions the pipeline needs beyond it:
-
-| Scope | Permission | Needed for |
-| --- | --- | --- |
-| Account · Workers Scripts | Edit | `wrangler deploy` |
-| Account · Workers KV Storage | Edit | KV binding |
-| Account · Workers R2 Storage | Edit | R2 binding |
-| Account · D1 | Edit | `d1 migrations apply` |
-| Account · Queues | Edit | queue bindings |
-| Account · Cloudflare Pages | Edit | `pages deploy` |
-| Account · Account Settings | Read | account resolution |
-
-Scope it to the single account you deploy to.
-
-**3. Add the GitHub repo secrets and variables** (*Settings → Secrets and
-variables → Actions*). Both deploy jobs are pinned to a GitHub
-`environment: production`, so you can additionally gate them behind a required
-reviewer there for a manual approval step.
-
-Secrets (encrypted):
+Add one repository secret under *Settings → Secrets and variables → Actions*:
 
 | Secret | Value |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | the token from step 2 |
-| `CLOUDFLARE_ACCOUNT_ID` | `c0128e9b69f21707bf722d77ef2f0fdd` |
+| `DATABASE_URL` | the production Neon connection string |
 
-Variables (plain — baked into the public JS bundle at build time and public by
-design, so they are *not* secrets):
+The `migrate` job is pinned to a GitHub `environment: production`, so it can be
+gated behind a required reviewer.
 
-| Variable | Value |
-| --- | --- |
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key (`pk_test_…`) |
-| `API_URL` | the Worker's URL, e.g. `https://rag-api.<subdomain>.workers.dev` |
-
-The Worker URL is printed by the first `wrangler deploy`; set `API_URL` from it
-and the next push picks it up.
-
-**4. Confirm the Worker secrets** are set (they persist across deploys and are
-deliberately *not* in CI, so `PINECONE_API_KEY` never has to exist in GitHub):
-
-```bash
-cd apps/api && pnpm dlx wrangler secret list
-# expected: CLERK_ISSUER, CLERK_AUTHORIZED_PARTY, PINECONE_API_KEY
-```
-
-`CLERK_AUTHORIZED_PARTY` must be `https://rag-web-1qn.pages.dev` and is
-**required** — session auth fails closed without it (see
-[Authentication](#authentication-session-or-api-key)).
-
-**5. Point Clerk at the deployed origin** — add
-`https://rag-web-1qn.pages.dev` to the Clerk application's allowed origins, or
-every session token it issues is rejected by the `azp` check.
+Migrations are expected to be **additive**: this job and the Vercel deploy are
+not ordered relative to each other. A destructive migration needs a deliberate
+two-phase rollout, or disable Vercel's Git integration for production and
+trigger it from a deploy hook after `migrate` succeeds.
 
 ## What is intentionally NOT implemented
 
 Billing/plans/quotas (beyond the per-minute rate limit) and **API-key
 scopes/permissions** — all keys are currently full-access for their tenant
-(`// TODO: scopes` in [`apikeys.ts`](apps/api/src/services/apikeys.ts)). Out of
-scope for the [analytics feature](#usage-analytics-feature-5) specifically:
-billing/invoicing, per-user (sub-tenant) attribution, alerting, report export,
-and real-time streaming updates (the dashboard refetches on filter change).
-Within the query pipeline (Feature 3), also out of scope: **re-ranking** with a
-cross-encoder (clean insertion point marked between retrieval and context
-assembly), query rewriting / HyDE / multi-query, semantic caching, an evaluation
-harness, and conversation history (single-turn Q&A only). **Hybrid (sparse+dense)
-search** is not enabled: the Workers AI bge-m3 binding exposes dense vectors
-only, so retrieval is dense-only behind the `VectorStore` seam (see the
-`// TODO: hybrid search` marker in
-[`retrieval.ts`](apps/api/src/services/retrieval.ts)).
+(`// TODO: scopes` in
+[`apikeys.ts`](apps/web/src/server/services/apikeys.ts)). Out of scope for
+analytics: billing/invoicing, per-user (sub-tenant) attribution, alerting,
+report export, and real-time streaming updates. Within the query pipeline:
+**re-ranking** with a cross-encoder (clean insertion point marked between
+retrieval and context assembly), query rewriting / HyDE / multi-query, semantic
+caching, an evaluation harness, and conversation history (single-turn Q&A only).
+**Hybrid (sparse+dense) search** is not enabled: Gemini's embedding API exposes
+dense vectors only, so retrieval is dense-only behind the `VectorStore` seam
+(see the `// TODO: hybrid search` marker in
+[`retrieval.ts`](apps/web/src/server/services/retrieval.ts)). **Durable
+resumption of ingestion** is not implemented — see
+[Ingestion pipeline](#ingestion-pipeline-feature-2) for what that means in
+practice and why.

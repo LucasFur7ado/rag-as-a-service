@@ -56,7 +56,7 @@ export const QueryUsageSchema = z
     invalidMarkers: z
       .array(z.number().int())
       .meta({ example: [], description: "Markers the model emitted that map to no retrieved chunk." }),
-    model: z.string().meta({ example: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" }),
+    model: z.string().meta({ example: "gemini-2.5-flash" }),
   })
   .meta({ id: "QueryUsage" });
 

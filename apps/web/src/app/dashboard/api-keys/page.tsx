@@ -14,6 +14,7 @@ import {
 import type { ApiKey } from "@rag/shared";
 import { RequireAuth } from "@/components/require-auth";
 import { useApi } from "@/lib/use-api";
+import { API_BASE_URL } from "@/lib/docs-config";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -47,7 +48,9 @@ export default function ApiKeysPage() {
   );
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787";
+// Absolute, so the curl snippet shown after creating a key is copy-pasteable.
+// Shared with the docs samples — see lib/docs-config.ts.
+const API_URL = API_BASE_URL;
 
 function formatDate(ms?: number): string {
   return ms ? new Date(ms).toLocaleDateString() : "—";

@@ -10,7 +10,7 @@ import { z } from "zod";
 /** ISO-8601 timestamp string, e.g. "2026-07-21T12:34:56.000Z". */
 export type IsoDateString = string;
 
-/** Epoch milliseconds — how the API stores and returns timestamps (D1 integer). */
+/** Epoch milliseconds — how the API stores and returns timestamps (bigint). */
 export type EpochMillis = number;
 
 /** An epoch-ms timestamp field with a realistic example for the spec. */
