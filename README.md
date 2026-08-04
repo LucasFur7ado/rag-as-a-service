@@ -603,9 +603,15 @@ goes to any static host.
 
 **API worker** — authenticate Wrangler first (`pnpm dlx wrangler login`):
 
+> Most of this is already provisioned — see
+> [Continuous deployment](#continuous-deployment), which deploys these same
+> resources automatically on every push to `main`. The commands below are the
+> manual equivalent / first-time setup.
+
 ```bash
 # One-time: provision the resources referenced in wrangler.jsonc
 pnpm dlx wrangler kv namespace create RAG_KV     # paste the id into apps/api/wrangler.jsonc
+                                                 # (bound as `KV`; the name here is just the label)
 pnpm dlx wrangler queues create ingest-queue
 pnpm dlx wrangler queues create ingest-queue-dlq
 pnpm dlx wrangler d1 create rag-db               # paste database_id into apps/api/wrangler.jsonc
@@ -650,6 +656,106 @@ host's error page if it supports one. Build-time env vars
 bundle, so set them **before** running the build for each environment.
 
 See [`apps/web/README.md`](apps/web/README.md) for the static-export details.
+
+## Continuous deployment
+
+Every push to `main` deploys via GitHub Actions
+([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)):
+
+```
+push to main ──► check (typecheck + lint + test)
+                   └─► deploy-api  (D1 migrations ─► wrangler deploy)
+                         └─► deploy-web  (next build ─► wrangler pages deploy)
+```
+
+Pull requests run **`check` only** — no deploy. Migrations run *before* the
+worker deploy so new code never meets an older schema; already-applied
+migrations are skipped, so it is safe on every push. `deploy-web` is chained
+after `deploy-api` so the SPA is never newer than the API it calls, and a
+`concurrency` group serializes runs so two deploys can't race.
+
+This targets the **top-level** `wrangler.jsonc` — the existing Worker and
+resources, with no `--env` flag. There is a single environment for now; when a
+production one is split out, add an `env.*` block and remember that **bindings
+are not inherited** by named environments (each must redeclare `vars`,
+`kv_namespaces`, `d1_databases`, `r2_buckets`, `queues`, `durable_objects`,
+`workflows`, `ai`, `analytics_engine_datasets` and `migrations` in full).
+
+### Deployment targets
+
+| Piece | Target |
+| --- | --- |
+| API | Worker `rag-api` |
+| Web | Pages project `rag-web` → https://rag-web-1qn.pages.dev |
+| Metadata | D1 `rag-db` (`23edf493-cbe8-4036-b7d9-d0a4e2d3aa61`) |
+| Auth cache | KV `RAG_KV` |
+| Ingestion | Queues `ingest-queue` / `ingest-queue-dlq` |
+| Raw files | R2 `rag-raw-docs` |
+
+### Before the first run
+
+**1. Enable R2** — R2 is not yet active on the account, so `rag-raw-docs` does
+not exist and every upload/ingestion path will fail until it is. Turn it on at
+*Cloudflare dashboard → R2 → Enable*, then:
+
+```bash
+cd apps/api && pnpm dlx wrangler r2 bucket create rag-raw-docs
+```
+
+**2. Create a scoped Cloudflare API token** at *My Profile → API Tokens →
+Create Token*. Start from the **Edit Cloudflare Workers** template, then add the
+permissions the pipeline needs beyond it:
+
+| Scope | Permission | Needed for |
+| --- | --- | --- |
+| Account · Workers Scripts | Edit | `wrangler deploy` |
+| Account · Workers KV Storage | Edit | KV binding |
+| Account · Workers R2 Storage | Edit | R2 binding |
+| Account · D1 | Edit | `d1 migrations apply` |
+| Account · Queues | Edit | queue bindings |
+| Account · Cloudflare Pages | Edit | `pages deploy` |
+| Account · Account Settings | Read | account resolution |
+
+Scope it to the single account you deploy to.
+
+**3. Add the GitHub repo secrets and variables** (*Settings → Secrets and
+variables → Actions*). Both deploy jobs are pinned to a GitHub
+`environment: production`, so you can additionally gate them behind a required
+reviewer there for a manual approval step.
+
+Secrets (encrypted):
+
+| Secret | Value |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | the token from step 2 |
+| `CLOUDFLARE_ACCOUNT_ID` | `c0128e9b69f21707bf722d77ef2f0fdd` |
+
+Variables (plain — baked into the public JS bundle at build time and public by
+design, so they are *not* secrets):
+
+| Variable | Value |
+| --- | --- |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key (`pk_test_…`) |
+| `API_URL` | the Worker's URL, e.g. `https://rag-api.<subdomain>.workers.dev` |
+
+The Worker URL is printed by the first `wrangler deploy`; set `API_URL` from it
+and the next push picks it up.
+
+**4. Confirm the Worker secrets** are set (they persist across deploys and are
+deliberately *not* in CI, so `PINECONE_API_KEY` never has to exist in GitHub):
+
+```bash
+cd apps/api && pnpm dlx wrangler secret list
+# expected: CLERK_ISSUER, CLERK_AUTHORIZED_PARTY, PINECONE_API_KEY
+```
+
+`CLERK_AUTHORIZED_PARTY` must be `https://rag-web-1qn.pages.dev` and is
+**required** — session auth fails closed without it (see
+[Authentication](#authentication-session-or-api-key)).
+
+**5. Point Clerk at the deployed origin** — add
+`https://rag-web-1qn.pages.dev` to the Clerk application's allowed origins, or
+every session token it issues is rejected by the `azp` check.
 
 ## What is intentionally NOT implemented
 

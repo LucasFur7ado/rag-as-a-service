@@ -6,6 +6,11 @@ CLERK_ISSUER=https://your-app-name.clerk.accounts.dev
 # `iss` only proves the token came from your Clerk instance, `azp` proves it
 # was issued for YOUR frontend.
 CLERK_AUTHORIZED_PARTY=http://localhost:3000
+# REQUIRED for local dev. Origin(s) allowed by CORS, comma-separated. The
+# WEB_ORIGIN in wrangler.jsonc is the DEPLOYED web origin on purpose, and
+# `wrangler dev` overrides it with whatever is set here — without this line the
+# local Next.js dev server at :3000 is blocked by CORS.
+WEB_ORIGIN=http://localhost:3000
 # Pinecone: create a serverless index with dimension 1024 (bge-m3) and metric
 # `cosine`. The host is shown on the index page in the Pinecone console.
 PINECONE_API_KEY=your_pinecone_api_key
