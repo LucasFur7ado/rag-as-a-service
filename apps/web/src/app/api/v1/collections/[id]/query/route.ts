@@ -14,7 +14,10 @@ import { findOwnedCollection, getDb } from "@/server/db";
 import { documents as documentsTable } from "@/server/db/schema";
 import { estimateCost, MAX_QUERY_LENGTH, MAX_TOP_K, TOP_K } from "@/server/config";
 import { countTokens } from "@/server/lib/tokens";
-import { GeminiEmbeddingProvider } from "@/server/services/embeddings";
+import {
+  WorkersAiEmbeddingProvider,
+  type EmbeddingProvider,
+} from "@/server/services/embeddings";
 import { PineconeVectorStore } from "@/server/services/vectorstore";
 import { retrieveChunks, type RetrievalResult } from "@/server/services/retrieval";
 import { assembleContext } from "@/server/services/context";
@@ -145,7 +148,7 @@ export const POST = handler(async (req, ctx: Ctx) => {
   };
 
   // --- Retrieve ------------------------------------------------------------
-  const embedder = new GeminiEmbeddingProvider();
+  const embedder: EmbeddingProvider = new WorkersAiEmbeddingProvider();
   const store = new PineconeVectorStore();
   let retrieval: RetrievalResult;
   try {

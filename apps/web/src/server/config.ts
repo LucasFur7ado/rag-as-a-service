@@ -71,33 +71,33 @@ export const CHUNK_SIZE_CHARS = 900;
 /** Overlap carried between consecutive chunks (~15% of CHUNK_SIZE_CHARS). */
 export const CHUNK_OVERLAP_CHARS = 135;
 
-// --- Embeddings (Google Gemini) ---------------------------------------------
+// --- Embeddings (Cloudflare Workers AI) -------------------------------------
 /**
- * Gemini's text embedding model. Free tier on Google AI Studio, and — unlike
- * most embedding models — its output dimensionality is configurable via
- * Matryoshka representation learning, which is what lets us keep the existing
- * 1024-dimension Pinecone index instead of recreating it.
+ * BGE-M3 on Workers AI, reached over the REST API — the model only, with no
+ * Worker deployed and no `AI` binding. Multilingual, 1024-dim dense vectors,
+ * 60k-token context.
+ *
+ * Its free allowance is the reason it is here: 10,000 Neurons/day covers
+ * ~9.3M input tokens, where Google's free embedding tier counts each input of
+ * a batch against a 100-request quota and a single full batch exhausts it.
  */
-export const EMBEDDING_MODEL = "gemini-embedding-001" as const;
+export const EMBEDDING_MODEL = "@cf/baai/bge-m3" as const;
 /**
- * Output dimensionality requested from EMBEDDING_MODEL — must match the
- * Pinecone index. 1024 is the dimension the index was created with; the
+ * Dimensionality of EMBEDDING_MODEL — must match the Pinecone index. 1024 is
+ * bge-m3's native output and the dimension the index was created with; the
  * pipeline verifies the match before its first upsert and fails loudly.
  */
 export const EMBEDDING_DIMENSION = 1024;
-/**
- * Inputs per embedding request. `batchEmbedContents` accepts up to 100
- * requests per call; Gemini's free-tier rate limits are per-request, not
- * per-input, so batching hard is also what keeps ingestion inside them.
- */
+/** Inputs per embedding request (the `text` array sent to Workers AI). */
 export const MAX_EMBED_BATCH_SIZE = 100;
 /**
- * Delay between embedding batches during ingestion (ms). The free tier is
- * capped at a handful of requests per minute; without spacing, a document of
- * more than a couple hundred chunks trips a 429 mid-pipeline. Set to 0 on a
- * paid tier.
+ * Delay between embedding batches during ingestion (ms). Zero: Workers AI
+ * allows 3,000 embedding requests/minute, which batches of
+ * MAX_EMBED_BATCH_SIZE cannot realistically approach. The binding constraint
+ * is the daily neuron allowance, and spacing requests out does not help with
+ * that — it only makes ingestion slower.
  */
-export const EMBED_BATCH_DELAY_MS = 1_000;
+export const EMBED_BATCH_DELAY_MS = 0;
 
 // --- Vector upserts (Pinecone) ----------------------------------------------
 /** Max vectors per upsert request (Pinecone recommends 100-200). */
@@ -121,11 +121,15 @@ export const TOP_K = 8;
 export const MAX_TOP_K = 20;
 /**
  * Minimum cosine similarity for a retrieved chunk to enter the context.
- * Gemini embeddings put on-topic chunks around ~0.6-0.8 and unrelated text
- * near ~0.4, so this sits deliberately low. Raise for stricter grounding
- * (more "no relevant content" answers), lower if relevant chunks are dropped.
+ * BGE-M3 cosine scores: on-topic chunks usually land >= ~0.5, unrelated text
+ * ~0.3 or below. Raise for stricter grounding (more "no relevant content"
+ * answers), lower if relevant chunks are being dropped.
+ *
+ * Back to 0.35 from the 0.45 the Gemini embeddings needed: Gemini's scores sat
+ * higher than BGE-M3's for relevant AND irrelevant text alike, so keeping 0.45
+ * here would silently drop on-topic chunks.
  */
-export const SIMILARITY_THRESHOLD = 0.45;
+export const SIMILARITY_THRESHOLD = 0.35;
 /**
  * Two chunks whose word-trigram Jaccard similarity exceeds this are treated
  * as near-duplicates; only the higher-scoring one is kept. Catches chunk
@@ -240,9 +244,11 @@ export const MODEL_COSTS: Record<
     inputPerToken: 0.3 / 1_000_000, // ~$0.30 / 1M input tokens (paid tier)
     outputPerToken: 2.5 / 1_000_000, // ~$2.50 / 1M output tokens (paid tier)
   },
-  // Gemini embeddings — priced per input token (output has no token cost).
-  "gemini-embedding-001": {
-    inputPerToken: 0.15 / 1_000_000, // ~$0.15 / 1M input tokens (paid tier)
+  // BGE-M3 on Workers AI — priced per input token (output has no token cost).
+  // 1,075 neurons / 1M input tokens, billed only past the 10k neurons/day free
+  // allowance, so real spend is usually 0.
+  "@cf/baai/bge-m3": {
+    inputPerToken: 0.012 / 1_000_000, // ~$0.012 / 1M input tokens
     outputPerToken: 0,
   },
 };

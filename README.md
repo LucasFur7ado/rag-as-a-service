@@ -88,7 +88,7 @@ trade-offs are documented where they bite:
 | --- | --- | --- |
 | D1 (SQLite) | **Neon Postgres** + Drizzle | Real window functions and `FILTER` clauses for the analytics SQL |
 | R2 | **Vercel Blob** (private store) | Files are readable only through an authenticated route |
-| Workers AI (bge-m3, Llama 3.3) | **Gemini** (`gemini-embedding-001`, `gemini-2.5-flash`) | Free tier; see [Embeddings](#embeddings-and-re-ingestion) |
+| Workers AI (bge-m3, Llama 3.3) | **Workers AI** (`@cf/baai/bge-m3`) for embeddings, **Gemini** (`gemini-2.5-flash`) for generation | Embeddings stayed on bge-m3 — via the REST API, not a Worker. See [Embeddings](#embeddings-and-re-ingestion) |
 | Queues + Workflows | **`after()`** background execution | No durable resume — see [Ingestion](#ingestion-pipeline-feature-2) |
 | Durable Object rate limiter | **Postgres advisory-lock window** | Still atomic per key — see [Rate limiting](#rate-limiting-feature-4) |
 | KV (API-key cache) | *removed* | Revocation is now immediate — see [Authentication](#authentication-session-or-api-key) |
@@ -134,7 +134,8 @@ Required:
 | `DATABASE_URL` | Neon **pooled** connection string |
 | `CLERK_ISSUER` | Your Clerk Frontend API URL |
 | `CLERK_AUTHORIZED_PARTY` | Your app's origin(s), comma-separated |
-| `GEMINI_API_KEY` | From [Google AI Studio](https://aistudio.google.com/apikey) |
+| `GEMINI_API_KEY` | From [Google AI Studio](https://aistudio.google.com/apikey) — answer generation |
+| `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` | Workers AI, for embeddings — see [Embeddings](#embeddings-and-re-ingestion). REST API only; no Worker is deployed |
 | `PINECONE_API_KEY` / `PINECONE_INDEX` / `PINECONE_INDEX_HOST` | See [Pinecone setup](#pinecone-setup) |
 | `BLOB_READ_WRITE_TOKEN` | Set automatically when you add a Blob store |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key |
@@ -179,7 +180,7 @@ private store, files are reachable only through
 
 ### Pinecone setup
 
-Ingestion embeds with **`gemini-embedding-001`** at **1024 dimensions**, so the
+Ingestion embeds with **`@cf/baai/bge-m3`** at **1024 dimensions**, so the
 Pinecone index must be created with that dimension and the **cosine** metric
 (the pipeline verifies this at run time and fails with a clear error on
 mismatch):
@@ -195,23 +196,37 @@ else needs installing.
 
 ### Embeddings and re-ingestion
 
-Embeddings moved from Workers AI's `@cf/baai/bge-m3` to Gemini. **Vectors from
-the old model are not comparable to the new ones** — different models produce
-different vector spaces even at the same dimension — so any documents ingested
-before the migration must be re-ingested (dashboard → **Reprocess**, or
+Embeddings briefly moved to `gemini-embedding-001` during the Vercel migration
+and have moved **back to `@cf/baai/bge-m3`**. Google's free embedding tier
+counts each *input* of a batch against a 100-request quota, so a single full
+batch exhausts it and ingestion 429s mid-document. Workers AI grants 10,000
+Neurons/day and bge-m3 costs 1,075 neurons per million input tokens — roughly
+**9.3M input tokens/day free**, about 40k chunks at `CHUNK_SIZE_CHARS`.
+
+This uses the **model only**, over the Workers AI REST API
+(`POST /accounts/:id/ai/run/@cf/baai/bge-m3`, `services/workersai.ts`). No
+Worker is deployed, there is no `wrangler` in the toolchain and no `AI`
+binding — it needs nothing but `CLOUDFLARE_ACCOUNT_ID` and
+`CLOUDFLARE_API_TOKEN`. Generation stays on Gemini, on a separate quota.
+
+**Vectors from different models are not comparable** — different models produce
+different vector spaces even at the same dimension — so every document must be
+re-ingested after a provider change (dashboard → **Reprocess**, or
 `POST /api/v1/documents/:id/reingest`). Vector ids are deterministic, so a
-re-run overwrites in place rather than duplicating.
+re-run overwrites in place rather than duplicating. Only one provider is wired
+up at a time, deliberately: a runtime switch would silently mix vector spaces
+inside a single index.
 
-The index dimension itself did **not** have to change. `gemini-embedding-001` is
-trained with Matryoshka representation learning, so a truncated prefix of its
-native 3072-dim output is still a valid embedding; requesting
-`outputDimensionality: 1024` is what let the existing index be reused as-is.
-Truncated vectors are re-normalized to unit length before they are stored.
+The index dimension never had to change. 1024 is bge-m3's **native** output —
+nothing is truncated or projected — and it is why the index was created with
+that dimension in the first place. Vectors are normalized defensively before
+storage (a no-op for bge-m3, which already returns unit-length vectors).
 
-Gemini also embeds **asymmetrically**: passages are encoded with
-`RETRIEVAL_DOCUMENT` and questions with `RETRIEVAL_QUERY`. This is a real
-improvement over the previous symmetric model, and it is why the
-`EmbeddingProvider` seam now takes a task argument.
+bge-m3 is **symmetric**: it takes no prefix and encodes passages and questions
+identically. The `EmbeddingProvider` seam still carries a task argument, since
+a provider that *does* distinguish the two (Gemini's `RETRIEVAL_DOCUMENT` /
+`RETRIEVAL_QUERY`) needs the caller to have said which it wanted, and that is
+not recoverable after the fact.
 
 ## Ingestion pipeline (Feature 2)
 
@@ -344,15 +359,16 @@ effect immediately (no re-ingestion needed):
 | --- | --- | --- |
 | `TOP_K` | `8` | Chunks fetched from the vector store per query |
 | `MAX_TOP_K` | `20` | Hard cap on a client-supplied `topK` |
-| `SIMILARITY_THRESHOLD` | `0.45` | Min cosine score to enter the context (raise = stricter grounding / more "not found") |
+| `SIMILARITY_THRESHOLD` | `0.35` | Min cosine score to enter the context (raise = stricter grounding / more "not found") |
 | `NEAR_DUPLICATE_JACCARD` | `0.85` | Word-trigram similarity above which chunks are deduplicated |
 | `CONTEXT_TOKEN_BUDGET` | `4000` | Max context tokens (BPE-counted); lowest-scoring chunks dropped first |
 | `MAX_QUERY_LENGTH` | `2000` | Reject longer questions with 400 |
 | `GENERATION_MODEL` / `GENERATION_MAX_TOKENS` / `GENERATION_TEMPERATURE` | Gemini 2.5 Flash / `1024` / `0.1` | Generation model + decoding |
 
-`SIMILARITY_THRESHOLD` was raised from 0.35 to 0.45 with the model change:
-Gemini's cosine scores sit higher than BGE-M3's for both relevant and irrelevant
-text, so the old threshold would have let noise through.
+`SIMILARITY_THRESHOLD` tracks the embedding model. It was raised to 0.45 while
+Gemini was in place — Gemini's cosine scores sit higher than BGE-M3's for both
+relevant and irrelevant text — and is back to **0.35** now that bge-m3 is; left
+at 0.45 it would silently drop on-topic chunks.
 
 **Edge cases.** Empty query → **400**; collection with no `ready` documents →
 **409** (friendly "ingest a document first" — never a hallucinated answer);

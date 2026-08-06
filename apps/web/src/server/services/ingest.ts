@@ -8,7 +8,7 @@ import { extractPages, type PageText } from "../lib/extract";
 import { chunkPages, type Chunk } from "../lib/chunking";
 import { PermanentError } from "../lib/errors";
 import { getDocumentBytes } from "../lib/blob";
-import { GeminiEmbeddingProvider } from "./embeddings";
+import { WorkersAiEmbeddingProvider, type EmbeddingProvider } from "./embeddings";
 import { PineconeVectorStore, vectorId, vectorNamespace } from "./vectorstore";
 import {
   EMBED_BATCH_DELAY_MS,
@@ -167,7 +167,7 @@ export async function runIngestion(params: IngestParams): Promise<void> {
     chunkCount = chunks.length;
 
     // -- 4. Preflight: embedding dimension must match the Pinecone index ----
-    const embedder = new GeminiEmbeddingProvider();
+    const embedder: EmbeddingProvider = new WorkersAiEmbeddingProvider();
     const store = new PineconeVectorStore();
     await withRetries("verify index dimension", async () => {
       const indexDim = await store.indexDimension();
@@ -211,8 +211,12 @@ export async function runIngestion(params: IngestParams): Promise<void> {
           })),
         );
       });
-      // Space the batches out to stay inside the Gemini free-tier RPM cap.
-      if (batch < batchCount - 1) await sleep(EMBED_BATCH_DELAY_MS);
+      // Optional spacing between batches. Zero for Workers AI (3,000 embedding
+      // requests/minute is unreachable at this batch size); kept as a seam for
+      // a provider with a tighter per-minute cap.
+      if (batch < batchCount - 1 && EMBED_BATCH_DELAY_MS > 0) {
+        await sleep(EMBED_BATCH_DELAY_MS);
+      }
     }
 
     // -- 6. Finalize: mark 'ready' ------------------------------------------

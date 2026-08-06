@@ -61,12 +61,34 @@ export function clerkAuthorizedParties(): string[] {
     .filter(Boolean);
 }
 
-/** Google AI Studio API key — powers both embeddings and generation. */
+/** Google AI Studio API key — powers answer generation. */
 export function geminiApiKey(): string {
   return required(
     process.env.GEMINI_API_KEY,
     "GEMINI_API_KEY",
     "create one at https://aistudio.google.com/apikey (free tier)",
+  );
+}
+
+/**
+ * Cloudflare account id that owns the Workers AI allocation used for
+ * embeddings. Only the REST API is used — this app deploys no Worker and needs
+ * no `wrangler`, no AI binding, and no Cloudflare runtime.
+ */
+export function cloudflareAccountId(): string {
+  return required(
+    process.env.CLOUDFLARE_ACCOUNT_ID,
+    "CLOUDFLARE_ACCOUNT_ID",
+    "copy it from the Cloudflare dashboard sidebar (Workers & Pages → Account ID)",
+  );
+}
+
+/** Cloudflare API token with the Workers AI Read + Edit permissions. */
+export function cloudflareApiToken(): string {
+  return required(
+    process.env.CLOUDFLARE_API_TOKEN,
+    "CLOUDFLARE_API_TOKEN",
+    "create one from the 'Workers AI' template at dashboard.cloudflare.com → My Profile → API Tokens",
   );
 }
 
