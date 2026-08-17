@@ -61,19 +61,10 @@ export function clerkAuthorizedParties(): string[] {
     .filter(Boolean);
 }
 
-/** Google AI Studio API key — powers answer generation. */
-export function geminiApiKey(): string {
-  return required(
-    process.env.GEMINI_API_KEY,
-    "GEMINI_API_KEY",
-    "create one at https://aistudio.google.com/apikey (free tier)",
-  );
-}
-
 /**
- * Cloudflare account id that owns the Workers AI allocation used for
- * embeddings. Only the REST API is used — this app deploys no Worker and needs
- * no `wrangler`, no AI binding, and no Cloudflare runtime.
+ * Cloudflare account id that owns the Workers AI allocation used for embeddings
+ * AND answer generation. Only the REST API is used — this app deploys no Worker
+ * and needs no `wrangler`, no AI binding, and no Cloudflare runtime.
  */
 export function cloudflareAccountId(): string {
   return required(

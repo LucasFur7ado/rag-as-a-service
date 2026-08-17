@@ -15,7 +15,10 @@
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
     "db:generate": "pnpm --filter web db:generate",
-    "db:migrate": "pnpm --filter web db:migrate"
+    "db:migrate": "pnpm --filter web db:migrate",
+    "eval:run": "pnpm --filter web eval:run",
+    "eval:gen": "pnpm --filter web eval:gen",
+    "eval:clean": "pnpm --filter web eval:clean"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

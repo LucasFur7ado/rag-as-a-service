@@ -206,6 +206,14 @@ export async function runIngestion(params: IngestParams): Promise<void> {
               chunkIndex: chunk.index,
               filename: doc.filename,
               ...(chunk.page !== null ? { page: chunk.page } : {}),
+              // Source offsets of this chunk within its page text. Stored so a
+              // retrieved chunk can be traced back to a location in the
+              // original document rather than only to a chunk id — which is
+              // what lets the eval harness (apps/web/eval) score retrieval
+              // against ground truth that survives a chunking config change.
+              // Vectors written before this existed simply lack the keys.
+              startChar: chunk.startChar,
+              endChar: chunk.endChar,
               text: chunk.text.slice(0, VECTOR_TEXT_METADATA_MAX_CHARS),
             },
           })),

@@ -29,3 +29,9 @@ pnpm-debug.log*
 Thumbs.db
 *.tsbuildinfo
 .vercel
+
+# Retrieval evaluation harness (apps/web/eval)
+# Raw run output and the embedding cache are reproducible artifacts, not source.
+# Copy a report.md out of results/ if you want to keep one.
+apps/web/eval/results/
+apps/web/eval/.cache/

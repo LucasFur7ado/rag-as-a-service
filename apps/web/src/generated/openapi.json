@@ -495,7 +495,7 @@
           },
           "model": {
             "type": "string",
-            "example": "gemini-2.5-flash"
+            "example": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
           }
         },
         "required": [

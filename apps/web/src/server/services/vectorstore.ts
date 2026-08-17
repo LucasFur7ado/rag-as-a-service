@@ -44,6 +44,17 @@ export interface VectorStore {
   deleteByDocument(namespace: string, documentId: string): Promise<void>;
   /** Delete a whole namespace and everything in it. */
   deleteNamespace(namespace: string): Promise<void>;
+  /**
+   * Vector count per namespace, for every namespace holding vectors.
+   *
+   * Nothing in the request path needs this — the app always knows the namespace
+   * it wants. It exists for the evaluation harness, which needs both halves:
+   * the names, to find and drop its own `__eval__` namespaces
+   * (`pnpm eval:clean`) without a local ledger that goes stale the moment a run
+   * is interrupted; and the counts, to wait for a freshly written index to
+   * become visible before querying it.
+   */
+  namespaceStats(): Promise<Record<string, number>>;
   /** Dimensionality of the backing index, or null when unknown/empty. */
   indexDimension(): Promise<number | null>;
 }
@@ -75,6 +86,13 @@ const LIST_PAGE_LIMIT = 100;
 interface ListResponse {
   vectors?: { id: string }[];
   pagination?: { next?: string };
+}
+
+/** Response of `/describe_index_stats`. */
+interface IndexStats {
+  dimension?: number;
+  /** Keyed by namespace name; only namespaces holding vectors appear. */
+  namespaces?: Record<string, { vectorCount?: number }>;
 }
 
 export class PineconeVectorStore implements VectorStore {
@@ -149,12 +167,17 @@ export class PineconeVectorStore implements VectorStore {
     });
   }
 
-  async indexDimension(): Promise<number | null> {
-    const stats = await this.request<{ dimension?: number }>(
-      "POST",
-      "/describe_index_stats",
-      {},
+  async namespaceStats(): Promise<Record<string, number>> {
+    // Read from index stats rather than the /namespaces endpoint: it is one
+    // call, needs no pagination, and is already how indexDimension() works.
+    const stats = await this.request<IndexStats>("POST", "/describe_index_stats", {});
+    return Object.fromEntries(
+      Object.entries(stats.namespaces ?? {}).map(([name, ns]) => [name, ns.vectorCount ?? 0]),
     );
+  }
+
+  async indexDimension(): Promise<number | null> {
+    const stats = await this.request<IndexStats>("POST", "/describe_index_stats", {});
     return stats.dimension ?? null;
   }
 

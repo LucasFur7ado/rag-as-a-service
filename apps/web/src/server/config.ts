@@ -149,25 +149,30 @@ export const MAX_QUERY_LENGTH = 2000;
 /** Max characters of a chunk echoed back to the client as a citation snippet. */
 export const CITATION_SNIPPET_MAX_CHARS = 500;
 
-// --- Query pipeline: generation (Google Gemini) ------------------------------
+// --- Query pipeline: generation (Cloudflare Workers AI) ----------------------
 /**
- * Instruction-tuned model used for answer generation. Gemini 2.5 Flash is on
- * the free tier, streams natively, and follows the citation contract ([n]
- * markers, refusing out-of-context questions) reliably. Swap for
- * "gemini-2.5-flash-lite" to trade quality for latency/quota.
+ * Instruction-tuned model used for answer generation, on the same Workers AI
+ * account as EMBEDDING_MODEL — one vendor, one token, one quota for the whole
+ * AI pipeline. Llama 3.3 70B in its fp8-fast serving profile streams natively
+ * and follows the citation contract ([n] markers, refusing out-of-context
+ * questions) reliably.
+ *
+ * Generation, not embeddings, is what spends the 10,000 Neurons/day free
+ * allowance: this model bills 26,668 neurons per 1M input tokens and 204,805
+ * per 1M output tokens, so a typical query (~4k context, ~300 output tokens)
+ * costs ~170 neurons — roughly 55 free queries/day. Swap for
+ * "@cf/meta/llama-3.1-8b-instruct-fp8-fast" (~6x cheaper) or
+ * "@cf/meta/llama-4-scout-17b-16e-instruct" (~2.5x cheaper on output) to trade
+ * quality for quota.
+ *
+ * Changing this is safe at any time — unlike EMBEDDING_MODEL, nothing on disk
+ * depends on it, so no re-ingestion is needed.
  */
-export const GENERATION_MODEL = "gemini-2.5-flash" as const;
+export const GENERATION_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as const;
 /** Max tokens the model may generate for one answer. */
 export const GENERATION_MAX_TOKENS = 1024;
 /** Low temperature: grounded Q&A wants determinism, not creativity. */
 export const GENERATION_TEMPERATURE = 0.1;
-/**
- * Thinking budget (tokens) for Gemini 2.5's reasoning phase. Zero disables it:
- * grounded extraction from supplied passages needs no chain of thought, and
- * thinking tokens are billed, counted against the free-tier quota, and add
- * seconds of latency before the first streamed token.
- */
-export const GENERATION_THINKING_BUDGET = 0;
 
 // --- API keys ---------------------------------------------------------------
 /** Prefix on every issued key. `live` leaves room for a future `rag_test_`. */
@@ -229,20 +234,22 @@ export const ANALYTICS_DEFAULT_RANGE_DAYS = 7;
 
 /**
  * Per-model cost constants (USD) used to estimate query cost from token
- * counts. Both models below are FREE on the Gemini free tier, so these are the
- * paid-tier list prices — they exist to give the dashboard a *relative* cost
- * signal and a realistic figure if the project ever moves to a paid key. NOT a
- * billing source of truth (billing is out of scope). Rates are USD per single
- * token (i.e. per-1M-token price / 1_000_000).
+ * counts. Both models below run on Workers AI, whose first 10,000 neurons/day
+ * are free — so these are the paid-tier list prices, there to give the
+ * dashboard a *relative* cost signal and a realistic figure once traffic
+ * outgrows the free allowance. NOT a billing source of truth (billing is out
+ * of scope). Rates are USD per single token (i.e. per-1M-token price
+ * / 1_000_000).
  */
 export const MODEL_COSTS: Record<
   string,
   { inputPerToken: number; outputPerToken: number }
 > = {
-  // Gemini 2.5 Flash — generation model (see GENERATION_MODEL).
-  "gemini-2.5-flash": {
-    inputPerToken: 0.3 / 1_000_000, // ~$0.30 / 1M input tokens (paid tier)
-    outputPerToken: 2.5 / 1_000_000, // ~$2.50 / 1M output tokens (paid tier)
+  // Llama 3.3 70B (fp8-fast) — generation model (see GENERATION_MODEL).
+  // 26,668 neurons / 1M input tokens, 204,805 / 1M output tokens.
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
+    inputPerToken: 0.293 / 1_000_000, // ~$0.293 / 1M input tokens
+    outputPerToken: 2.253 / 1_000_000, // ~$2.253 / 1M output tokens
   },
   // BGE-M3 on Workers AI — priced per input token (output has no token cost).
   // 1,075 neurons / 1M input tokens, billed only past the 10k neurons/day free

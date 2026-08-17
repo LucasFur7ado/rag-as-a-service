@@ -18,6 +18,10 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    // `eval/` is a standalone, non-deterministic harness that spends real API
+    // quota — it is NOT part of this suite and is never run by CI. Its metric
+    // and relevance math, however, is pure and is exactly the part that must
+    // not silently drift, so those files (and only those) are included here.
+    include: ["src/**/*.test.ts", "eval/**/*.test.ts"],
   },
 });

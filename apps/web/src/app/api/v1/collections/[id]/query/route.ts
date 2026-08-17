@@ -22,7 +22,7 @@ import { PineconeVectorStore } from "@/server/services/vectorstore";
 import { retrieveChunks, type RetrievalResult } from "@/server/services/retrieval";
 import { assembleContext } from "@/server/services/context";
 import { resolveCitations } from "@/server/services/citations";
-import { GeminiLlmProvider, type LlmMessage } from "@/server/services/llm";
+import { WorkersAiLlmProvider, type LlmMessage } from "@/server/services/llm";
 import { RAG_SYSTEM_PROMPT, buildUserPrompt } from "@/server/prompts";
 import { resolveRecorder, type RecordEventInput } from "@/server/services/analytics";
 
@@ -103,7 +103,7 @@ export const POST = handler(async (req, ctx: Ctx) => {
   // merged in at each exit. `answerText`/`promptText` are counted into tokens
   // INSIDE the deferred closure so token counting never runs on the hot path.
   const pipelineStart = Date.now();
-  const llm = new GeminiLlmProvider();
+  const llm = new WorkersAiLlmProvider();
 
   const recordUsage = (
     extra: Partial<RecordEventInput> & {

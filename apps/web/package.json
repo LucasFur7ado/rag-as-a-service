@@ -13,7 +13,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx scripts/migrate.ts"
+    "db:migrate": "tsx scripts/migrate.ts",
+    "eval:run": "tsx --conditions=react-server eval/scripts/run.ts",
+    "eval:gen": "tsx --conditions=react-server eval/scripts/gen.ts",
+    "eval:clean": "tsx --conditions=react-server eval/scripts/clean.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

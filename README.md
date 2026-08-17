@@ -7,7 +7,7 @@ app deployed to Vercel. Implemented so far:
   Postgres (metadata, via Drizzle ORM) and Vercel Blob (raw files), with a
   dashboard UI.
 - **Feature 2 — async ingestion pipeline**: uploads are parsed, chunked,
-  embedded (Gemini) and upserted to Pinecone in the background, with live status
+  embedded (Workers AI) and upserted to Pinecone in the background, with live status
   in the dashboard. See [Ingestion pipeline](#ingestion-pipeline-feature-2).
 - **Feature 3 — query pipeline**: a natural-language question is embedded,
   retrieved against the tenant+collection namespace, assembled into a bounded
@@ -25,6 +25,10 @@ app deployed to Vercel. Implemented so far:
 - **Feature 6 — API documentation**: an OpenAPI 3.1 spec generated from the same
   Zod schemas the app's types come from, plus hosted docs. See
   [API documentation](#api-documentation-feature-6).
+- **Feature 8 — retrieval evaluation harness**: a standalone benchmark that
+  scores chunking + embedding + vector search against a committed golden
+  dataset, comparing configurations with reproducible metrics and per-query
+  failure analysis. See [Retrieval evaluation](#retrieval-evaluation-feature-8).
 
 ## Architecture
 
@@ -63,7 +67,7 @@ request.
 | Ingestion pipeline | [`server/services/ingest.ts`](apps/web/src/server/services/ingest.ts) |
 | Text extraction (PDF via `unpdf`, txt/markdown) | [`server/lib/extract.ts`](apps/web/src/server/lib/extract.ts) |
 | Recursive chunker with overlap | [`server/lib/chunking.ts`](apps/web/src/server/lib/chunking.ts) |
-| Embeddings + generation (Gemini) | [`server/services/embeddings.ts`](apps/web/src/server/services/embeddings.ts), [`llm.ts`](apps/web/src/server/services/llm.ts) |
+| Embeddings + generation (Workers AI) | [`server/services/embeddings.ts`](apps/web/src/server/services/embeddings.ts), [`llm.ts`](apps/web/src/server/services/llm.ts) |
 | Vector store (Pinecone over REST) | [`server/services/vectorstore.ts`](apps/web/src/server/services/vectorstore.ts) |
 | Per-key rate limiter | [`server/services/ratelimit.ts`](apps/web/src/server/services/ratelimit.ts) |
 | Tuning constants (chunk sizes, batch limits, models) | [`server/config.ts`](apps/web/src/server/config.ts) |
@@ -88,7 +92,7 @@ trade-offs are documented where they bite:
 | --- | --- | --- |
 | D1 (SQLite) | **Neon Postgres** + Drizzle | Real window functions and `FILTER` clauses for the analytics SQL |
 | R2 | **Vercel Blob** (private store) | Files are readable only through an authenticated route |
-| Workers AI (bge-m3, Llama 3.3) | **Workers AI** (`@cf/baai/bge-m3`) for embeddings, **Gemini** (`gemini-2.5-flash`) for generation | Embeddings stayed on bge-m3 — via the REST API, not a Worker. See [Embeddings](#embeddings-and-re-ingestion) |
+| Workers AI (bge-m3, Llama 3.3) | **Workers AI**, unchanged — `@cf/baai/bge-m3` for embeddings, `@cf/meta/llama-3.3-70b-instruct-fp8-fast` for generation | Reached over the REST API now, not an `AI` binding — no Worker is deployed. See [Embeddings](#embeddings-and-re-ingestion) |
 | Queues + Workflows | **`after()`** background execution | No durable resume — see [Ingestion](#ingestion-pipeline-feature-2) |
 | Durable Object rate limiter | **Postgres advisory-lock window** | Still atomic per key — see [Rate limiting](#rate-limiting-feature-4) |
 | KV (API-key cache) | *removed* | Revocation is now immediate — see [Authentication](#authentication-session-or-api-key) |
@@ -134,8 +138,7 @@ Required:
 | `DATABASE_URL` | Neon **pooled** connection string |
 | `CLERK_ISSUER` | Your Clerk Frontend API URL |
 | `CLERK_AUTHORIZED_PARTY` | Your app's origin(s), comma-separated |
-| `GEMINI_API_KEY` | From [Google AI Studio](https://aistudio.google.com/apikey) — answer generation |
-| `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` | Workers AI, for embeddings — see [Embeddings](#embeddings-and-re-ingestion). REST API only; no Worker is deployed |
+| `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` | Workers AI, for embeddings **and** answer generation — see [Embeddings](#embeddings-and-re-ingestion). REST API only; no Worker is deployed |
 | `PINECONE_API_KEY` / `PINECONE_INDEX` / `PINECONE_INDEX_HOST` | See [Pinecone setup](#pinecone-setup) |
 | `BLOB_READ_WRITE_TOKEN` | Set automatically when you add a Blob store |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key |
@@ -207,7 +210,9 @@ This uses the **model only**, over the Workers AI REST API
 (`POST /accounts/:id/ai/run/@cf/baai/bge-m3`, `services/workersai.ts`). No
 Worker is deployed, there is no `wrangler` in the toolchain and no `AI`
 binding — it needs nothing but `CLOUDFLARE_ACCOUNT_ID` and
-`CLOUDFLARE_API_TOKEN`. Generation stays on Gemini, on a separate quota.
+`CLOUDFLARE_API_TOKEN`. Generation moved back to Workers AI too (see
+[Generation](#generation)), so those two variables now cover the entire AI
+pipeline and share one 10,000 Neurons/day allowance.
 
 **Vectors from different models are not comparable** — different models produce
 different vector spaces even at the same dimension — so every document must be
@@ -241,7 +246,7 @@ POST /api/v1/collections/:id/documents
                                     keeps page numbers for later citations)
         3. chunk text              (recursive character splitting w/ overlap)
         4. verify index dimension  (embedding dim must match Pinecone index)
-        5. embed + upsert batches  (Gemini ≤100 inputs/request →
+        5. embed + upsert batches  (Workers AI ≤100 inputs/request →
                                     Pinecone upserts ≤150 vectors & <2 MB/request)
         6. finalize                (status = ready + chunk count)
       on any failure → status = error + readable message
@@ -267,8 +272,11 @@ Design notes:
 - **`maxDuration`.** The upload route budgets 300s (the Vercel Pro/Fluid
   ceiling). On Hobby the platform caps it lower (60s), which is enough for
   typical documents but can time out on a very large PDF.
-- **Free-tier pacing.** Gemini's free tier caps requests per minute, so batches
-  are spaced by `EMBED_BATCH_DELAY_MS` (default 1s). Set it to 0 on a paid key.
+- **Free-tier pacing.** `EMBED_BATCH_DELAY_MS` spaces embedding batches, and is
+  0 by default: Workers AI allows 3,000 embedding requests/minute, which batches
+  of `MAX_EMBED_BATCH_SIZE` cannot approach. The binding constraint is the daily
+  neuron allowance, which spacing does not help with. Raise it only if a
+  provider with a per-minute cap is wired in.
 - **Idempotent** — vector ids are deterministic (`{documentId}#{chunkIndex}`),
   so re-running ingestion overwrites vectors instead of duplicating them.
 - **Tenant isolation** — vectors live in a per-tenant+collection namespace
@@ -291,10 +299,10 @@ Design notes:
 
 ```
 POST /api/v1/collections/:id/query    body: { query, topK?, stream? }
-   1. embed query        (Gemini, RETRIEVAL_QUERY task)
+   1. embed query        (Workers AI bge-m3, `task: "query"`)
    2. retrieve top-k     (Pinecone: tenant+collection namespace + tenantId filter)
    3. assemble context   (threshold → dedupe → token budget → reorder → label [n])
-   4. generate           (Gemini 2.5 Flash, streamed, grounded system prompt)
+   4. generate           (Workers AI Llama 3.3 70B, streamed, grounded prompt)
    5. resolve citations  (map emitted [n] markers → real chunks; drop hallucinated)
 ```
 
@@ -317,12 +325,22 @@ orchestrates and shapes the response — no SDK calls in the handler.
     -d '{"query":"What is the refund policy?","stream":false}'
   ```
 
-**Model.** Generation uses **`gemini-2.5-flash`** behind the `LlmProvider` seam
-in [`llm.ts`](apps/web/src/server/services/llm.ts) — swap the class (or just
+<a id="generation"></a>
+**Model.** Generation uses **`@cf/meta/llama-3.3-70b-instruct-fp8-fast`** on
+Workers AI, behind the `LlmProvider` seam in
+[`llm.ts`](apps/web/src/server/services/llm.ts) — swap the class (or just
 `GENERATION_MODEL`) to move generation elsewhere without touching the pipeline.
-`thinkingBudget` is set to **0**: grounded extraction from supplied passages
-needs no chain of thought, and thinking tokens cost quota and delay the first
-streamed token.
+It rides the same REST transport, account and token as embeddings
+([`workersai.ts`](apps/web/src/server/services/workersai.ts)), so the AI half of
+the stack is one vendor and one quota. Streaming comes back as SSE that is *not*
+wrapped in Cloudflare's `result` envelope, which is why `workersAiStream()`
+returns the raw body for the provider to decode.
+
+Generation, not embeddings, is what spends the free 10,000 Neurons/day: this
+model bills 26,668 neurons/1M input tokens and 204,805/1M output, so a typical
+query (~4k context, ~300 output tokens) costs ~170 neurons — roughly **55 free
+queries/day**. `@cf/meta/llama-3.1-8b-instruct-fp8-fast` is ~6x cheaper if that
+bites. Unlike the embedding model, changing this needs **no** re-ingestion.
 
 **Grounding & citations.** The [system prompt](apps/web/src/server/prompts.ts)
 instructs the model to answer **only** from the numbered context passages, cite
@@ -345,9 +363,9 @@ defense-in-depth — a namespace-construction bug still can't surface another
 tenant's vectors. The collection itself is loaded tenant-scoped, so a second
 user querying the first user's collection id gets a **404**.
 
-**Hybrid search: not enabled — dense-only.** Gemini's embedding API returns
-dense vectors only, so no sparse/lexical weights were stored at ingestion and
-there is nothing to fuse. The dense path lives behind the `VectorStore` seam
+**Hybrid search: not enabled — dense-only.** The Workers AI endpoint for
+bge-m3 returns dense vectors only — the model produces sparse/lexical weights
+but they are not exposed — so nothing was stored at ingestion to fuse. The dense path lives behind the `VectorStore` seam
 with a marked `// TODO: hybrid search` in
 [`retrieval.ts`](apps/web/src/server/services/retrieval.ts).
 
@@ -363,7 +381,7 @@ effect immediately (no re-ingestion needed):
 | `NEAR_DUPLICATE_JACCARD` | `0.85` | Word-trigram similarity above which chunks are deduplicated |
 | `CONTEXT_TOKEN_BUDGET` | `4000` | Max context tokens (BPE-counted); lowest-scoring chunks dropped first |
 | `MAX_QUERY_LENGTH` | `2000` | Reject longer questions with 400 |
-| `GENERATION_MODEL` / `GENERATION_MAX_TOKENS` / `GENERATION_TEMPERATURE` | Gemini 2.5 Flash / `1024` / `0.1` | Generation model + decoding |
+| `GENERATION_MODEL` / `GENERATION_MAX_TOKENS` / `GENERATION_TEMPERATURE` | Llama 3.3 70B (fp8-fast) / `1024` / `0.1` | Generation model + decoding |
 
 `SIMILARITY_THRESHOLD` tracks the embedding model. It was raised to 0.45 while
 Gemini was in place — Gemini's cosine scores sit higher than BGE-M3's for both
@@ -612,8 +630,8 @@ curl http://localhost:3000/api/me       # -> 401 {"error":"Missing credentials"}
 ```
 
 Unlike the Workers setup, there are no local emulators: `next dev` talks to the
-real Neon database, the real Vercel Blob store, and the real Gemini and Pinecone
-APIs. Point `DATABASE_URL` at a Neon **branch** to keep local work off
+real Neon database, the real Vercel Blob store, and the real Workers AI and
+Pinecone APIs. Point `DATABASE_URL` at a Neon **branch** to keep local work off
 production data.
 
 ## Scripts (root)
@@ -628,6 +646,9 @@ production data.
 | `pnpm test` | Run unit tests |
 | `pnpm db:generate` | Generate SQL migrations from the Drizzle schema |
 | `pnpm db:migrate` | Apply migrations to `DATABASE_URL` |
+| `pnpm eval:run` | Run retrieval experiments (real APIs — see [Retrieval evaluation](#retrieval-evaluation-feature-8)) |
+| `pnpm eval:gen` | Generate a golden-dataset review queue |
+| `pnpm eval:clean` | Delete the harness's Pinecone namespaces |
 
 ## Deploy
 
@@ -650,7 +671,7 @@ Then:
    on the project automatically (`DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`).
 2. **Set the remaining environment variables** from
    [`apps/web/.env.example`](apps/web/.env.example) — `CLERK_ISSUER`,
-   `CLERK_AUTHORIZED_PARTY`, `GEMINI_API_KEY`, `PINECONE_*`, `CRON_SECRET`,
+   `CLERK_AUTHORIZED_PARTY`, `CLOUDFLARE_*`, `PINECONE_*`, `CRON_SECRET`,
    `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, and `NEXT_PUBLIC_API_URL` /
    `PUBLIC_API_URL` (your deployed origin + `/api`).
 3. **Apply the migrations**: `DATABASE_URL=… pnpm db:migrate`, or let the
@@ -695,6 +716,38 @@ not ordered relative to each other. A destructive migration needs a deliberate
 two-phase rollout, or disable Vercel's Git integration for production and
 trigger it from a deploy hook after `migrate` succeeds.
 
+## Retrieval evaluation (Feature 8)
+
+A standalone harness in [`apps/web/eval/`](apps/web/eval/) that measures how good
+**retrieval** is — chunking + embedding + vector search together — so
+configurations can be compared instead of guessed at.
+
+```bash
+pnpm eval:run -- --config baseline --config chunk-1200   # compare two configs
+pnpm eval:gen -- --name my-set                           # generate a dataset
+pnpm eval:clean                                          # drop eval namespaces
+```
+
+It reuses the production pipeline (`chunkPages`, `WorkersAiEmbeddingProvider`,
+`PineconeVectorStore`, `retrieveFromNamespace`) rather than reimplementing it,
+indexes only into `__eval__:`-prefixed Pinecone namespaces, and never touches
+tenant data or the database.
+
+**It is not part of `pnpm test` or CI** — it calls live models, spends real
+Workers AI quota, and its results are non-deterministic. Only its metric math is
+unit-tested in the vitest suite, which still needs no secrets.
+
+The design decision that makes it work: **ground truth is anchored to source
+character spans, never to chunk ids**, so one dataset validly scores different
+chunking configurations. That required `chunkPages()` to record `startChar` /
+`endChar` on every chunk — every chunk is now a contiguous slice of its source
+page text, an invariant asserted in
+[`chunking.test.ts`](apps/web/src/server/lib/chunking.test.ts) — and ingestion
+now writes those offsets into vector metadata.
+
+Full method, metrics, cost caveats, and how to build a dataset:
+[`apps/web/eval/README.md`](apps/web/eval/README.md).
+
 ## What is intentionally NOT implemented
 
 Billing/plans/quotas (beyond the per-minute rate limit) and **API-key
@@ -706,8 +759,9 @@ report export, and real-time streaming updates. Within the query pipeline:
 **re-ranking** with a cross-encoder (clean insertion point marked between
 retrieval and context assembly), query rewriting / HyDE / multi-query, semantic
 caching, an evaluation harness, and conversation history (single-turn Q&A only).
-**Hybrid (sparse+dense) search** is not enabled: Gemini's embedding API exposes
-dense vectors only, so retrieval is dense-only behind the `VectorStore` seam
+**Hybrid (sparse+dense) search** is not enabled: the Workers AI endpoint for
+bge-m3 exposes dense vectors only, so retrieval is dense-only behind the
+`VectorStore` seam
 (see the `// TODO: hybrid search` marker in
 [`retrieval.ts`](apps/web/src/server/services/retrieval.ts)). **Durable
 resumption of ingestion** is not implemented — see

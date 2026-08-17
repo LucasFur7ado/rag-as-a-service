@@ -4,15 +4,14 @@ import {
   GENERATION_MAX_TOKENS,
   GENERATION_MODEL,
   GENERATION_TEMPERATURE,
-  GENERATION_THINKING_BUDGET,
 } from "../config";
 import { PermanentError } from "../lib/errors";
-import { geminiFetch, geminiJson } from "./gemini";
+import { workersAiRun, workersAiStream } from "./workersai";
 
 /**
  * LLM provider seam.
  *
- * Concrete implementations (Gemini, Anthropic, OpenAI, ...) plug in here so
+ * Concrete implementations (Workers AI, Anthropic, OpenAI, ...) plug in here so
  * retrieval/route code depends only on this interface — generation can be
  * moved to another provider by swapping the class the route constructs.
  */
@@ -44,103 +43,82 @@ export interface LlmProvider {
   stream(request: LlmCompletionRequest): AsyncIterable<string>;
 }
 
-interface GeminiPart {
-  text?: string;
-}
-interface GeminiCandidate {
-  content?: { parts?: GeminiPart[] };
-}
-interface GenerateContentResponse {
-  candidates?: GeminiCandidate[];
-  promptFeedback?: { blockReason?: string };
+/**
+ * One chat-completion payload from Workers AI.
+ *
+ * The endpoint answers in two dialects at once: a flat `response` string and an
+ * OpenAI-compatible `choices` array (`message.content` when buffered,
+ * `delta.content` when streaming). `response` is the documented field and is
+ * what we read; `choices` is the fallback, because a model served through the
+ * OpenAI-compatible path can omit `response`.
+ */
+interface ChatCompletionPayload {
+  response?: string;
+  choices?: {
+    message?: { content?: string };
+    delta?: { content?: string };
+  }[];
 }
 
 /**
- * Google Gemini text generation over the REST API (default model:
+ * Answer generation on Cloudflare Workers AI over the REST API (default model:
  * GENERATION_MODEL in src/server/config.ts).
  *
- * Gemini's request shape differs from the OpenAI-style `messages` array in two
- * ways this adapter absorbs: the system prompt is a separate top-level
- * `systemInstruction` rather than a message with `role: "system"`, and the
- * assistant role is spelled `model`.
+ * Same account, token, and transport as the embedding provider — the whole AI
+ * pipeline now sits on one vendor and one quota (see services/workersai.ts).
+ *
+ * The adapter is thin because Workers AI already speaks the OpenAI-style
+ * `messages` array this seam is modelled on: `system`/`user`/`assistant` map
+ * across unchanged, with no separate system-instruction field to hoist.
  */
-export class GeminiLlmProvider implements LlmProvider {
+export class WorkersAiLlmProvider implements LlmProvider {
   readonly defaultModel: string = GENERATION_MODEL;
 
   async complete(request: LlmCompletionRequest): Promise<LlmCompletion> {
     const model = request.model ?? this.defaultModel;
-    const body = await geminiJson<GenerateContentResponse>(
-      `/models/${model}:generateContent`,
+    const body = await workersAiRun<ChatCompletionPayload>(
+      model,
       buildRequestBody(request),
     );
 
     const text = extractText(body);
     if (text === null) {
-      // A safety block or an empty candidate list will not fix itself on retry.
-      const reason = body.promptFeedback?.blockReason;
-      throw new PermanentError(
-        `Gemini model ${model} returned no text response${reason ? ` (blocked: ${reason})` : ""}`,
-      );
+      // An empty completion is deterministic for this prompt — a content filter
+      // or an exhausted token budget — and will not fix itself on retry.
+      throw new PermanentError(`Workers AI model ${model} returned no text response`);
     }
     return { text, model };
   }
 
   async *stream(request: LlmCompletionRequest): AsyncIterable<string> {
     const model = request.model ?? this.defaultModel;
-    // `alt=sse` switches the streaming endpoint from a chunked JSON array to
-    // Server-Sent Events, which is incrementally parseable.
-    const res = await geminiFetch(
-      `/models/${model}:streamGenerateContent?alt=sse`,
-      buildRequestBody(request),
-      { accept: "text/event-stream" },
-    );
-
-    if (!res.body) {
-      throw new PermanentError(`Gemini model ${model} returned no stream`);
-    }
-    yield* parseSseTextDeltas(res.body);
+    const body = await workersAiStream(model, buildRequestBody(request));
+    yield* parseSseTextDeltas(body);
   }
 }
 
-/** Map the provider-neutral request onto Gemini's `generateContent` body. */
+/** Map the provider-neutral request onto the Workers AI text-generation body. */
 function buildRequestBody(request: LlmCompletionRequest) {
-  const system = request.messages
-    .filter((m) => m.role === "system")
-    .map((m) => m.content)
-    .join("\n\n");
-
-  const contents = request.messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
-    }));
-
   return {
-    ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
-    contents,
-    generationConfig: {
-      temperature: request.temperature ?? GENERATION_TEMPERATURE,
-      maxOutputTokens: request.maxTokens ?? GENERATION_MAX_TOKENS,
-      // Grounded extraction from supplied passages needs no chain of thought,
-      // and thinking tokens cost quota and delay the first streamed token.
-      thinkingConfig: { thinkingBudget: GENERATION_THINKING_BUDGET },
-    },
+    messages: request.messages.map((m) => ({ role: m.role, content: m.content })),
+    temperature: request.temperature ?? GENERATION_TEMPERATURE,
+    max_tokens: request.maxTokens ?? GENERATION_MAX_TOKENS,
   };
 }
 
-/** Concatenate every text part of the first candidate; null when there is none. */
-function extractText(body: GenerateContentResponse): string | null {
-  const parts = body.candidates?.[0]?.content?.parts;
-  if (!parts) return null;
-  const text = parts.map((p) => p.text ?? "").join("");
+/** Pull the text out of a completion payload; null when there is none. */
+function extractText(payload: ChatCompletionPayload): string | null {
+  const choice = payload.choices?.[0];
+  const text =
+    payload.response ?? choice?.message?.content ?? choice?.delta?.content ?? "";
   return text || null;
 }
 
 /**
- * Decode a Gemini SSE byte stream into text deltas. Each `data:` line carries
- * one `GenerateContentResponse` chunk; events split across network chunks are
- * handled by buffering up to each newline.
+ * Decode a Workers AI SSE byte stream into text deltas. Each `data:` line
+ * carries one {@link ChatCompletionPayload} chunk and the stream ends with the
+ * `[DONE]` sentinel; events split across network chunks are handled by
+ * buffering up to each newline.
  */
 async function* parseSseTextDeltas(
   stream: ReadableStream<Uint8Array>,
@@ -162,7 +140,7 @@ async function* parseSseTextDeltas(
         const payload = line.slice(5).trim();
         if (!payload || payload === "[DONE]") continue;
         try {
-          const text = extractText(JSON.parse(payload) as GenerateContentResponse);
+          const text = extractText(JSON.parse(payload) as ChatCompletionPayload);
           if (text) yield text;
         } catch {
           // Malformed keep-alive/partial line — skip rather than abort.

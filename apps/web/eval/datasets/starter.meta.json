@@ -1,0 +1,11 @@
+{
+  "name": "starter",
+  "description": "Hand-written questions over the three-document reference corpus. Every question deliberately paraphrases its source rather than reusing its wording, so dense retrieval has to do real work; spans were derived from paragraph anchors and validated against the corpus. Covers concepts, metrics, method, and operational prose.",
+  "itemCount": 27,
+  "createdAt": "2026-08-17T00:00:00.000Z",
+  "corpus": "retrieval-primer.md, evaluation-notes.md, platform-runbook.md",
+  "provenance": "manual",
+  "generatorModel": null,
+  "humanReviewed": true,
+  "notes": "Committed so `pnpm eval:run -- --config baseline` works on a fresh clone with no generation step. 27 items is small — treat differences under a few points as noise, and grow the set with `pnpm eval:gen` before acting on a narrow delta."
+}

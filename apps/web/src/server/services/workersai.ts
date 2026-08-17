@@ -12,11 +12,14 @@ import { PermanentError } from "../lib/errors";
  * of this app ran on Workers and reached the same models through `env.AI.run`;
  * the REST endpoint is the equivalent for a non-Workers host.)
  *
- * Mirrors services/gemini.ts, including the error taxonomy the ingestion retry
- * logic depends on: a 4xx other than 429 is deterministic — a bad token, an
- * unknown model, a malformed request — and becomes a `PermanentError` so
- * ingestion fails fast instead of burning its retry budget. 429 and 5xx stay
- * plain `Error`s, i.e. "back off and retry".
+ * Both AI calls in the app go through here — embeddings (services/embeddings.ts)
+ * and answer generation (services/llm.ts) — so there is one account, one token,
+ * and one error taxonomy for the whole pipeline.
+ *
+ * That taxonomy is what the ingestion retry logic depends on: a 4xx other than
+ * 429 is deterministic — a bad token, an unknown model, a malformed request —
+ * and becomes a `PermanentError` so ingestion fails fast instead of burning its
+ * retry budget. 429 and 5xx stay plain `Error`s, i.e. "back off and retry".
  */
 
 const API_BASE = "https://api.cloudflare.com/client/v4";
@@ -31,8 +34,12 @@ interface CloudflareEnvelope<T> {
   errors?: { code?: number; message?: string }[];
 }
 
-/** Run a Workers AI model and return its (unwrapped) output. */
-export async function workersAiRun<T>(model: string, input: unknown): Promise<T> {
+/** POST to a model's run endpoint, mapping transport/HTTP failures. */
+async function workersAiFetch(
+  model: string,
+  input: unknown,
+  init?: { accept?: string },
+): Promise<Response> {
   const url = `${API_BASE}/accounts/${cloudflareAccountId()}/ai/run/${model}`;
 
   let res: Response;
@@ -42,6 +49,7 @@ export async function workersAiRun<T>(model: string, input: unknown): Promise<T>
       headers: {
         Authorization: `Bearer ${cloudflareApiToken()}`,
         "Content-Type": "application/json",
+        ...(init?.accept ? { Accept: init.accept } : {}),
       },
       body: JSON.stringify(input),
     });
@@ -59,6 +67,12 @@ export async function workersAiRun<T>(model: string, input: unknown): Promise<T>
     }
     throw new Error(message);
   }
+  return res;
+}
+
+/** Run a Workers AI model and return its (unwrapped) output. */
+export async function workersAiRun<T>(model: string, input: unknown): Promise<T> {
+  const res = await workersAiFetch(model, input);
 
   const body = (await res.json()) as CloudflareEnvelope<T>;
   if (body.success === false || body.result === undefined) {
@@ -69,4 +83,28 @@ export async function workersAiRun<T>(model: string, input: unknown): Promise<T>
     throw new Error(`Workers AI ${model} returned an error: ${detail}`);
   }
   return body.result;
+}
+
+/**
+ * Run a Workers AI model with `stream: true` and return the raw SSE body.
+ *
+ * Streaming responses are NOT wrapped in {@link CloudflareEnvelope} — the
+ * endpoint switches to `text/event-stream` and emits bare `data:` lines — so
+ * this deliberately returns the stream rather than a parsed result, and the
+ * caller decodes the model-specific event shape.
+ */
+export async function workersAiStream(
+  model: string,
+  input: unknown,
+): Promise<ReadableStream<Uint8Array>> {
+  const res = await workersAiFetch(
+    model,
+    { ...(input as object), stream: true },
+    { accept: "text/event-stream" },
+  );
+  if (!res.body) {
+    // No body on a 200 is not something a retry fixes.
+    throw new PermanentError(`Workers AI ${model} returned no stream`);
+  }
+  return res.body;
 }

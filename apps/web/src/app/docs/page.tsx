@@ -72,7 +72,7 @@ export default function DocsOverviewPage() {
       "cited": true
     }
   ],
-  "usage": { "chunksRetrieved": 8, "chunksUsed": 5, "contextTokens": 1240, "invalidMarkers": [], "model": "gemini-2.5-flash" }
+  "usage": { "chunksRetrieved": 8, "chunksUsed": 5, "contextTokens": 1240, "invalidMarkers": [], "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast" }
 }`}
       />
       <p>
