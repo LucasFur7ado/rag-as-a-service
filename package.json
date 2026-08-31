@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Multi-tenant RAG-as-a-Service monorepo (Next.js on Vercel).",
+  "license": "MIT",
   "engines": {
     "node": ">=20"
   },
@@ -18,7 +19,9 @@
     "db:migrate": "pnpm --filter web db:migrate",
     "eval:run": "pnpm --filter web eval:run",
     "eval:gen": "pnpm --filter web eval:gen",
-    "eval:clean": "pnpm --filter web eval:clean"
+    "eval:beir": "pnpm --filter web eval:beir",
+    "eval:clean": "pnpm --filter web eval:clean",
+    "eval:reset": "pnpm --filter web eval:reset"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

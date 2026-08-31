@@ -88,6 +88,15 @@ export async function ensureIndexed(
     chunks: IndexedChunk[];
     force: boolean;
     onProgress?: (message: string) => void;
+    /**
+     * How long to wait for the upserted vectors to become queryable. Defaults
+     * to {@link VISIBILITY_TIMEOUT_MS}, which suits the committed corpus; a BEIR
+     * corpus writes tens of thousands of vectors and needs longer (see
+     * BEIR_VISIBILITY_TIMEOUT_MS). Raising it is not cosmetic — querying a
+     * partially visible index does not fail, it reports better metrics than the
+     * configuration earned.
+     */
+    visibilityTimeoutMs?: number;
   },
 ): Promise<IndexOutcome> {
   const { namespace, chunks, force } = options;
@@ -95,13 +104,34 @@ export async function ensureIndexed(
   assertEvalNamespace(namespace);
 
   const existing = await withRetries("read index stats", () => store.namespaceStats());
-  if (existing[namespace] !== undefined) {
-    if (!force) return { namespace, chunkCount: chunks.length, reused: true };
+  const existingCount = existing[namespace];
+  if (existingCount !== undefined) {
+    // Reuse only a namespace that is actually COMPLETE. The name is a hash of
+    // the corpus, chunking, and model, so an existing one provably holds the
+    // right *kind* of vectors — but not necessarily all of them. A run
+    // interrupted partway (Ctrl-C, a crashed process, a provider outage) leaves
+    // a namespace holding some prefix of the chunks, and reusing that scores
+    // the configuration against a fraction of its own corpus.
+    //
+    // That failure is silent and it flatters: a missing chunk is one fewer
+    // competitor for the top-k slots, so a half-written index does not error,
+    // it reports metrics the configuration did not earn. Comparing the count is
+    // the whole check, and repairing it is nearly free — the embedding cache is
+    // keyed by content, so re-indexing chunks that were already embedded spends
+    // no quota, only upserts.
+    const complete = existingCount === chunks.length;
+    if (!force && complete) return { namespace, chunkCount: chunks.length, reused: true };
 
     // Re-indexing in place would leave any chunk that no longer exists behind
     // as a stale vector. Drop the namespace and wait for the delete to drain
     // before writing, or the new vectors race the old delete.
-    log(`--force: dropping ${namespace} before re-indexing`);
+    log(
+      complete
+        ? `--force: dropping ${namespace} before re-indexing`
+        : `${namespace} holds ${existingCount} vectors but this configuration produces ` +
+            `${chunks.length} — the index is incomplete, dropping and rebuilding it ` +
+            `(cached embeddings make this cost no quota)`,
+    );
     await withRetries(`delete ${namespace}`, () => store.deleteNamespace(namespace));
     await waitForNamespaceGone(store, namespace, log);
   }
@@ -142,7 +172,7 @@ export async function ensureIndexed(
     log(`indexed ${Math.min(start + batchSize, chunks.length)}/${chunks.length} chunks`);
   }
 
-  await waitForVisibility(store, namespace, chunks.length, log);
+  await waitForVisibility(store, namespace, chunks.length, log, options.visibilityTimeoutMs);
   return { namespace, chunkCount: chunks.length, reused: false };
 }
 
@@ -200,8 +230,9 @@ async function waitForVisibility(
   namespace: string,
   expected: number,
   onProgress?: (message: string) => void,
+  timeoutMs: number = VISIBILITY_TIMEOUT_MS,
 ): Promise<void> {
-  const deadline = Date.now() + VISIBILITY_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   let visible = 0;
   let stableReadings = 0;
 
@@ -221,7 +252,7 @@ async function waitForVisibility(
 
   console.warn(
     `  ! ${namespace} still shows ${visible}/${expected} vectors after ` +
-      `${VISIBILITY_TIMEOUT_MS / 1000}s. Querying anyway — treat this run's metrics as unreliable ` +
+      `${timeoutMs / 1000}s. Querying anyway — treat this run's metrics as unreliable ` +
       `and re-run to confirm.`,
   );
 }

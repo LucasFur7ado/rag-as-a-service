@@ -13,7 +13,15 @@ retrieval broke and why.
 pnpm eval:run -- --config baseline                      # one configuration
 pnpm eval:run -- --config chunk-400 --config chunk-1200 # a comparison
 pnpm eval:clean                                         # drop the eval namespaces
+pnpm eval:reset -- --dry-run                            # full clean slate, previewed
 ```
+
+There is a second, complementary answer key: **public BEIR benchmarks**
+(`pnpm eval:beir`), whose ground truth is whole documents rather than source
+spans. It answers "is this stack competitive by an outside standard?" where the
+custom set answers "does it find the passage that answers the question?". Both
+run on the same pipeline, cache, and namespace isolation — see
+[BEIR.md](BEIR.md).
 
 ## What this measures, and what it does not
 
@@ -117,9 +125,12 @@ eval/
 ├── datasets/          Committed golden sets: <name>.jsonl + <name>.meta.json
 ├── experiments/       Committed configurations, one .ts per experiment
 ├── lib/               Harness internals (metrics, relevance, cache, runner…)
-├── scripts/           run.ts · gen.ts · clean.ts
+│   └── beir/          Document-level ground truth: loader, fold, judge, report
+├── scripts/           run.ts · gen.ts · beir.ts · clean.ts
+├── beir/data/         Downloaded BEIR datasets (git-ignored, optional location)
 ├── results/           Run output (git-ignored)
 ├── .cache/            Embedding cache (git-ignored)
+├── BEIR.md            The public-benchmark half of the harness
 └── config.ts          Every eval-only constant, commented
 ```
 
@@ -288,15 +299,64 @@ Generation is the expensive side: `eval:gen` at 6 passages/document across 3
 documents is ~54 completions and lands nearer 300–400 neurons, which is why it
 prompts before spending.
 
+A **BEIR** run is the one that costs real quota — NFCorpus is 3,633 documents
+against this corpus's three, and indexing it in full is ~1,479 neurons, about
+15% of a day. It therefore prompts at a fifth of the threshold used here, and
+`pnpm eval:beir -- --dry-run` prices a run without indexing anything. See
+[BEIR.md → Cost](BEIR.md#cost-and-the-thing-that-actually-saves-quota).
+
+## Starting from a clean slate
+
+```bash
+pnpm eval:reset -- --dry-run          # show exactly what would go, delete nothing
+pnpm eval:reset                       # namespaces + results
+pnpm eval:reset -- --cache            # ...and the embedding cache (costs quota)
+pnpm eval:reset -- --dataset starter  # only one dataset's namespaces
+```
+
+A run leaves state in three places, and they are **not** equally dangerous —
+which is why `eval:reset` does not simply delete all three:
+
+| State | Can it corrupt a result? | Default |
+| --- | --- | --- |
+| Pinecone `__eval__:` namespaces | **Yes** | deleted |
+| `eval/results/` | No — output only, nothing reads it back | deleted |
+| `eval/.cache/` | **No** — keyed by `hash(model + text)` | **kept** |
+
+The namespace is the one that matters, because of a specific failure:
+`ensureIndexed` reuses a namespace that already exists, and a run interrupted
+partway leaves one holding a *prefix* of the chunks. Scoring against that does
+not error — a missing chunk is one fewer competitor for the top-k slots, so a
+half-written index reports metrics the configuration never earned.
+
+That is now caught rather than only cleaned up after: `ensureIndexed` compares
+the namespace's vector count against the chunk count and rebuilds on a
+mismatch. The rebuild is nearly free, because the embedding cache is
+content-addressed and already holds those vectors.
+
+Which is also why **the cache is kept by default**. A cache hit returns exactly
+the vector the model would have returned for that text, so it cannot make a run
+wrong; a truncated shard is already discarded and rebuilt by `EmbeddingCache`.
+Deleting it buys no correctness and costs real quota — refilling it for NFCorpus
+alone is ~1,479 neurons, about 15% of a day. Pass `--cache` if you want it gone
+regardless.
+
+`eval:clean` remains the narrower command: namespaces only, nothing local. Both
+share one implementation of the guarded delete in
+[`lib/cleanup.ts`](lib/cleanup.ts), so the check protecting tenant data cannot
+be right in one script and subtly wrong in the other.
+
 ## Isolation from tenant data
 
 The harness shares the app's Pinecone index and writes only to namespaces
-prefixed `__eval__:`. Tenant namespaces are `t_{tenantId}__c_{collectionId}` and
+prefixed `__eval__:` — BEIR runs included, which is why `eval:clean` finds them
+and `eval:clean --dataset beir-nfcorpus` targets only those. Tenant namespaces are `t_{tenantId}__c_{collectionId}` and
 cannot collide with it.
 
-`assertEvalNamespace()` guards every destructive operation, and `eval:clean`
-re-checks each namespace at the moment of deletion, not only when selecting
-them. It reports how many namespaces it is leaving alone. The harness never
+`assertEvalNamespace()` guards every destructive operation, and both `eval:clean`
+and `eval:reset` re-check each namespace at the moment of deletion, not only when
+selecting them. Both print the tenant namespaces they are leaving alone, by name.
+There is no flag that makes either of them touch tenant data. The harness never
 opens a database connection, reads a tenant document, or touches Vercel Blob.
 
 ## Known caveats

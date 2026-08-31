@@ -16,7 +16,9 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "eval:run": "tsx --conditions=react-server eval/scripts/run.ts",
     "eval:gen": "tsx --conditions=react-server eval/scripts/gen.ts",
-    "eval:clean": "tsx --conditions=react-server eval/scripts/clean.ts"
+    "eval:beir": "tsx --conditions=react-server eval/scripts/beir.ts",
+    "eval:clean": "tsx --conditions=react-server eval/scripts/clean.ts",
+    "eval:reset": "tsx --conditions=react-server eval/scripts/reset.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

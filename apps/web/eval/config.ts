@@ -166,3 +166,121 @@ export const GEN_PASSAGE_CHARS = 700;
 
 /** Generation temperature. Higher than the product's 0.1: variety is the point. */
 export const GEN_TEMPERATURE = 0.7;
+
+// --- BEIR benchmark datasets ------------------------------------------------
+
+/**
+ * The second kind of ground truth this harness understands.
+ *
+ * Everything above describes the *custom* golden set, whose answer key is a
+ * span of a source document. BEIR datasets (`eval:beir`) are the opposite
+ * shape: a public benchmark whose answer key names whole documents, with a
+ * graded relevance per (query, document) pair and no offsets anywhere. The two
+ * cannot share a judging rule, so they do not share one — see
+ * `lib/beir/judge.ts` for what replaces span overlap.
+ *
+ * What they DO share is everything that costs money or can corrupt data: the
+ * chunker, the embedding cache, the budget gate, the `__eval__:` namespace
+ * prefix, and the metric math in `lib/metrics.ts`.
+ */
+
+/**
+ * Directories searched for a BEIR dataset, relative to this file, in order.
+ * `--data <path>` overrides them all, and `BEIR_DATA_DIR` is checked first.
+ *
+ * The repository root is included because that is where an unpacked BEIR
+ * download naturally lands (`<repo>/nfcorpus/`). The data itself is NOT
+ * committed: it is ~9 MB of third-party corpus that is versioned, published,
+ * and re-downloadable, so reproducibility comes from naming it and fingerprinting
+ * its contents rather than from vendoring it.
+ */
+export const BEIR_SEARCH_ROOTS = [
+  resolve(here, "beir", "data"),
+  resolve(here, "..", "..", ".."),
+] as const;
+
+/** Where a missing dataset can be fetched from, printed in the error. */
+export const BEIR_DOWNLOAD_URL_TEMPLATE =
+  "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{name}.zip";
+
+/** Default BEIR dataset, and the one this repo was set up against. */
+export const DEFAULT_BEIR_DATASET = "nfcorpus";
+
+/** Default qrels split. `test` is what published BEIR numbers are measured on. */
+export const DEFAULT_BEIR_SPLIT = "test";
+
+/**
+ * Cutoffs the BEIR report is measured at.
+ *
+ * Wider than REPORT_K_VALUES because BEIR's conventions are: nDCG@10 is the
+ * headline, Recall@100 and MAP@100 are the companions. NFCorpus averages ~38
+ * relevant documents per test query (median 16, max 475), so recall at a small
+ * k is bounded far below 1 by the dataset itself and says more about the answer
+ * key than about retrieval.
+ */
+export const BEIR_K_VALUES = [1, 3, 5, 10, 20, 100] as const;
+
+/**
+ * Chunks fetched per query before folding to a document ranking.
+ *
+ * This is NOT the product's topK. BEIR scores a ranking of *documents*, and a
+ * document ranking of depth 100 needs more than 100 chunks to exist, because
+ * several retrieved chunks routinely come from the same document. NFCorpus
+ * documents average ~1.6k characters — about two chunks each at the production
+ * chunk size — so 250 chunks yields a document ranking comfortably past the
+ * largest cutoff in BEIR_K_VALUES.
+ *
+ * Depth costs no embedding quota: it is a query-time parameter, and folding is
+ * order-preserving, so one run at this depth reports the correct number at every
+ * cutoff rather than needing a run per cutoff.
+ */
+export const DEFAULT_BEIR_CHUNK_DEPTH = 250;
+
+/**
+ * Estimated neurons above which a BEIR run stops and asks for confirmation.
+ *
+ * Much lower than NEURON_BUDGET_PROMPT_THRESHOLD, and deliberately so. A BEIR
+ * corpus is three orders of magnitude larger than the committed one: indexing
+ * NFCorpus in full costs a material slice of the 10,000/day allowance, and a
+ * chunk-size sweep over it would spend the whole day's quota. That should be a
+ * decision someone makes on purpose, not a number they read afterwards.
+ */
+export const BEIR_NEURON_BUDGET_PROMPT_THRESHOLD = 500;
+
+/** Seed for query/document sampling. Fixed so a sampled run is reproducible. */
+export const BEIR_DEFAULT_SEED = 1;
+
+/**
+ * How long to wait for a freshly indexed BEIR namespace to become queryable.
+ *
+ * Five minutes rather than the one the committed corpus gets: this is tens of
+ * thousands of vectors, and querying a partially visible index does not fail —
+ * it silently reports *better* metrics, because a missing chunk is one fewer
+ * competitor for the top slots.
+ */
+export const BEIR_VISIBILITY_TIMEOUT_MS = 300_000;
+
+/** Worst queries written to `failures.jsonl` for a BEIR run. */
+export const MAX_BEIR_FAILURES_REPORTED = 25;
+
+/** Documents recorded per failing query, retrieved and missed alike. */
+export const BEIR_FAILURE_CONTEXT_DOCS = 10;
+
+/**
+ * Published nDCG@10 reference points, for reading a run's headline number
+ * against something.
+ *
+ * Only quoted for a run that is actually comparable — full corpus, full query
+ * set, standard split — because a sampled corpus is a smaller haystack and
+ * scores higher for reasons that have nothing to do with retrieval quality.
+ *
+ * These are lexical-baseline numbers from the BEIR paper (Thakur et al., 2021,
+ * NeurIPS Datasets & Benchmarks), not measurements taken here. For current
+ * dense-model numbers see the MTEB retrieval leaderboard, which tracks the same
+ * splits: https://huggingface.co/spaces/mteb/leaderboard
+ */
+export const BEIR_REFERENCE_NDCG10: Record<string, { system: string; ndcg10: number; source: string }[]> = {
+  nfcorpus: [
+    { system: "BM25 (lexical baseline)", ndcg10: 0.325, source: "BEIR paper, Table 2" },
+  ],
+};

@@ -1,20 +1,22 @@
 import { createInterface } from "node:readline/promises";
 import { PineconeVectorStore } from "../../src/server/services/vectorstore";
-import { EVAL_NAMESPACE_PREFIX } from "../config";
 import { loadEnvFiles, requireCredentials } from "../lib/bootstrap";
 import { fail, parseArgs } from "../lib/cli";
-import { waitForNamespaceGone } from "../lib/indexer";
-import { assertEvalNamespace, isEvalNamespace } from "../lib/namespace";
-import { withRetries } from "../lib/retry";
+import { deleteEvalNamespaces, selectEvalNamespaces } from "../lib/cleanup";
 
 /**
  * `pnpm eval:clean [-- --dataset <name>] [--yes]`
  *
- * Deletes the harness's Pinecone namespaces. Every candidate is checked against
- * {@link isEvalNamespace} first and again immediately before the delete — this
- * command runs against the same index that holds real tenant documents, whose
+ * Deletes the harness's Pinecone namespaces, and only those. Every candidate is
+ * checked when selected and again immediately before the delete — this command
+ * runs against the same index that holds real tenant documents, whose
  * namespaces are `t_{tenantId}__c_{collectionId}`, and a prefix check is the
- * only thing separating a cleanup from data loss.
+ * only thing separating a cleanup from data loss. Both checks live in
+ * lib/cleanup.ts so this script and `eval:reset` cannot disagree about them.
+ *
+ * For a full clean slate — namespaces plus run output, and optionally the
+ * embedding cache — use `pnpm eval:reset`, which prints what each kind of state
+ * can and cannot do to a result before deleting it.
  *
  * Flags:
  *   --dataset <name>  Only namespaces for this dataset.
@@ -28,24 +30,22 @@ async function main(): Promise<void> {
   requireCredentials({ ai: false, vectors: true });
 
   const store = new PineconeVectorStore();
-  const all = Object.keys(await withRetries("read index stats", () => store.namespaceStats()));
-
   const dataset = args.value("dataset");
-  const targets = all
-    .filter(isEvalNamespace)
-    .filter((ns) => !dataset || ns.startsWith(`${EVAL_NAMESPACE_PREFIX}:${dataset}:`));
+  const { targets, protectedNamespaces, total, counts } = await selectEvalNamespaces(store, dataset);
 
-  const protectedCount = all.length - all.filter(isEvalNamespace).length;
   console.log(
-    `\n  ${all.length} namespace(s) in the index — ${targets.length} match the evaluation prefix, ` +
-      `${protectedCount} are not ours and will not be touched.\n`,
+    `\n  ${total} namespace(s) in the index — ` +
+      `${targets.length} match the evaluation prefix, ` +
+      `${protectedNamespaces.length} are not ours and will not be touched.\n`,
   );
 
   if (targets.length === 0) {
     console.log("  Nothing to clean.\n");
     return;
   }
-  for (const namespace of targets) console.log(`    ${namespace}`);
+  for (const namespace of targets) {
+    console.log(`    ${namespace}  (${(counts[namespace] ?? 0).toLocaleString()} vectors)`);
+  }
   console.log("");
 
   if (args.flag("dry-run")) {
@@ -69,31 +69,21 @@ async function main(): Promise<void> {
     }
   }
 
-  for (const namespace of targets) {
-    // Re-checked at the point of deletion, not only at selection time.
-    assertEvalNamespace(namespace);
-    await withRetries(`delete ${namespace}`, () => store.deleteNamespace(namespace));
-    console.log(`    ✓ deleted ${namespace}`);
-  }
-
-  console.log("\n  Waiting for deletions to propagate…");
-  for (const namespace of targets) {
-    await waitForNamespaceGone(store, namespace, (message) => console.log(`    ${message}`));
-  }
+  await deleteEvalNamespaces(store, targets, (message) => console.log(`    ${message}`));
 
   console.log(`\n  Removed ${targets.length} evaluation namespace(s).`);
   // Index stats report a namespace as gone well before the delete has finished
-  // propagating, so the wait above is necessary but NOT sufficient. Namespace
-  // names are a hash of the configuration, so the next `eval:run` re-creates
-  // these exact names and a late-arriving delete can empty them mid-run.
-  // `runExperiment` detects that and refuses to report the numbers, but the
+  // propagating, so the wait inside deleteEvalNamespaces is necessary but NOT
+  // sufficient. Namespace names are a hash of the configuration, so the next
+  // run re-creates these exact names and a late-arriving delete can empty them
+  // mid-run. Both runners detect that and refuse to report the numbers, but the
   // cheaper fix is simply not to race it.
   console.log(
     "\n  Note: Pinecone reports a namespace as deleted before the delete has fully propagated.\n" +
       "  Wait a few minutes before the next `pnpm eval:run`. If you do not, the run will detect\n" +
       "  the index changing underneath it and abort rather than report corrupted metrics.\n",
   );
-  console.log("  The on-disk embedding cache is untouched — delete eval/.cache to clear it.\n");
+  console.log("  The on-disk embedding cache is untouched — `pnpm eval:reset -- --cache` clears it.\n");
 }
 
 main().catch(fail);

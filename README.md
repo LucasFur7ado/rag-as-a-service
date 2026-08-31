@@ -27,8 +27,9 @@ app deployed to Vercel. Implemented so far:
   [API documentation](#api-documentation-feature-6).
 - **Feature 8 — retrieval evaluation harness**: a standalone benchmark that
   scores chunking + embedding + vector search against a committed golden
-  dataset, comparing configurations with reproducible metrics and per-query
-  failure analysis. See [Retrieval evaluation](#retrieval-evaluation-feature-8).
+  dataset *and* against public BEIR benchmarks, comparing configurations with
+  reproducible metrics and per-query failure analysis. See
+  [Retrieval evaluation](#retrieval-evaluation-feature-8).
 
 ## Architecture
 
@@ -648,7 +649,9 @@ production data.
 | `pnpm db:migrate` | Apply migrations to `DATABASE_URL` |
 | `pnpm eval:run` | Run retrieval experiments (real APIs — see [Retrieval evaluation](#retrieval-evaluation-feature-8)) |
 | `pnpm eval:gen` | Generate a golden-dataset review queue |
+| `pnpm eval:beir` | Score retrieval against a public BEIR benchmark (real APIs) |
 | `pnpm eval:clean` | Delete the harness's Pinecone namespaces |
+| `pnpm eval:reset` | Clean slate: eval namespaces + run output (`--cache` for the cache too) |
 
 ## Deploy
 
@@ -725,7 +728,10 @@ configurations can be compared instead of guessed at.
 ```bash
 pnpm eval:run -- --config baseline --config chunk-1200   # compare two configs
 pnpm eval:gen -- --name my-set                           # generate a dataset
+pnpm eval:beir -- --dry-run                              # price a BEIR run
+pnpm eval:beir                                           # score against NFCorpus
 pnpm eval:clean                                          # drop eval namespaces
+pnpm eval:reset -- --dry-run                             # clean slate, previewed
 ```
 
 It reuses the production pipeline (`chunkPages`, `WorkersAiEmbeddingProvider`,
@@ -745,8 +751,29 @@ page text, an invariant asserted in
 [`chunking.test.ts`](apps/web/src/server/lib/chunking.test.ts) — and ingestion
 now writes those offsets into vector metadata.
 
+**Two answer keys, deliberately.** `eval:run` scores a small hand-written golden
+set whose ground truth is a character span — it catches a regression in our
+pipeline on our content, and survives a chunk-size change. `eval:beir` scores a
+public BEIR benchmark (NFCorpus: 3,633 documents, 323 judged test queries) whose
+ground truth is whole documents, which is what says whether the stack is
+competitive by an outside standard. Neither substitutes for the other: a
+document-level answer key structurally cannot detect a chunk boundary that
+splits an answer in half, and our own corpus cannot tell us how we rank.
+
+Making the second work meant folding the retrieved **chunk** ranking into a
+**document** ranking — each document entering at its best chunk, once — before
+scoring against the qrels. Scoring chunks directly against document-level
+judgements would count one relevant document retrieved as five chunks as five
+successes.
+
+BEIR datasets are not committed (~9 MB of third-party corpus each); a run is
+reproduced by naming the dataset and checking the corpus fingerprint the report
+prints. `pnpm eval:beir -- --dry-run` prices a run before it indexes anything —
+NFCorpus in full is ~15% of a day's free Workers AI allowance.
+
 Full method, metrics, cost caveats, and how to build a dataset:
-[`apps/web/eval/README.md`](apps/web/eval/README.md).
+[`apps/web/eval/README.md`](apps/web/eval/README.md) and
+[`apps/web/eval/BEIR.md`](apps/web/eval/BEIR.md).
 
 ## What is intentionally NOT implemented
 

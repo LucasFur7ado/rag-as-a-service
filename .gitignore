@@ -35,3 +35,28 @@ Thumbs.db
 # Copy a report.md out of results/ if you want to keep one.
 apps/web/eval/results/
 apps/web/eval/.cache/
+
+# BEIR benchmark datasets (pnpm eval:beir).
+# Third-party corpora, ~9 MB each, published and versioned upstream — so a run
+# is reproduced by naming the dataset and checking the corpus fingerprint the
+# report prints, not by vendoring the files. Unzip a download into either of
+# these locations and the harness finds it.
+/nfcorpus/
+/scifact/
+/fiqa/
+/trec-covid/
+/arguana/
+apps/web/eval/beir/data/
+
+# Local Claude Code settings (machine-specific; not shared with collaborators).
+.claude/settings.local.json
+
+# Local eval corpus and the datasets built from it.
+# The PDFs are third-party or institutional documents that are not ours to
+# redistribute, and the datasets quote them verbatim in `answerText`. The
+# tracked corpus (*.md) and datasets/starter.* are synthetic and stay in git,
+# so the harness still runs on a fresh clone.
+apps/web/eval/corpus/*.pdf
+apps/web/eval/corpus-excluded/
+apps/web/eval/datasets/llamados.*
+apps/web/eval/datasets/uav-papers.*
